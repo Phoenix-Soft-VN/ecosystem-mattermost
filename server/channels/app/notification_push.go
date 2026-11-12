@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"io"
 	"net/http"
 	"runtime"
@@ -72,6 +73,9 @@ type PushNotification struct {
 func (a *App) sendPushNotificationSync(rctx request.CTX, post *model.Post, user *model.User, channel *model.Channel, channelName string, senderName string,
 	explicitMention bool, channelWideMention bool, replyToThreadType string,
 ) *model.AppError {
+	if policy := phoenix.Default(); policy != nil && !policy.NotificationAllowed(rctx.Context(), user.Id, []string{channel.Id}) {
+		return nil
+	}
 	cfg := a.Config()
 	msg, appErr := a.BuildPushNotificationMessage(
 		rctx,

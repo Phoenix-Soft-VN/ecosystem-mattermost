@@ -6,6 +6,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"html"
 	"html/template"
 	"io"
@@ -149,6 +150,10 @@ func (a *App) sendNotificationEmail(rctx request.CTX, notification *PostNotifica
 	channel := notification.Channel
 	post := notification.Post
 
+	if policy := phoenix.Default(); policy != nil && !policy.NotificationAllowed(rctx.Context(), user.Id, []string{channel.Id}) {
+		return nil, nil
+	}
+
 	if channel.IsGroupOrDirect() {
 		teams, err := a.Srv().Store().Team().GetTeamsByUserId(user.Id)
 		if err != nil {
@@ -267,6 +272,9 @@ func (a *App) sendNotificationEmail(rctx request.CTX, notification *PostNotifica
 	recordPostDelivery := emailNotification.MessageHTML != ""
 
 	a.Srv().Go(func() {
+		if policy := phoenix.Default(); policy != nil && !policy.NotificationAllowed(rctx.Context(), user.Id, []string{channel.Id}) {
+			return
+		}
 		if nErr := a.Srv().EmailService.SendMailWithEmbeddedFiles(user.Email, html.UnescapeString(emailNotification.Subject), bodyText, embeddedFiles, messageID, inReplyTo, references, "Notification"); nErr != nil {
 			rctx.Logger().Error("Error while sending the email", mlog.String("user_email", user.Email), mlog.Err(nErr))
 			return

@@ -5,7 +5,9 @@ package email
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"html/template"
 	"io"
 	"net/http"
@@ -251,6 +253,20 @@ func truncateUserNames(name string, i int) string {
 }
 
 func (es *Service) sendBatchedEmailNotification(userID string, notifications []*batchedNotification) {
+	if policy := phoenix.Default(); policy != nil {
+		channels := make([]string, 0, len(notifications))
+		seen := map[string]bool{}
+		for _, n := range notifications {
+			if !seen[n.post.ChannelId] {
+				channels = append(channels, n.post.ChannelId)
+				seen[n.post.ChannelId] = true
+			}
+		}
+		if !policy.NotificationAllowed(context.Background(), userID, channels) {
+			return
+		}
+	}
+
 	user, err := es.userService.GetUser(request.EmptyContext(es.logger), userID)
 	if err != nil {
 		mlog.Warn("Unable to find recipient for batched email notification")
