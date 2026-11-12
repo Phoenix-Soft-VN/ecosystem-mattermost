@@ -18,6 +18,12 @@ func TestNotificationBoundary(t *testing.T) {
 	ctx := context.Background()
 	f.db.Exec(`UPDATE channels SET deleteat=0`)
 	f.insert("channelmembers", map[string]any{"channelid": w.ChanA, "userid": w.A1})
+	dm := f.id("dm")
+	f.insert("channels", map[string]any{"id": dm, "teamid": "", "type": "D", "name": "unbound-dm", "deleteat": 0})
+	f.insert("channelmembers", map[string]any{"channelid": dm, "userid": w.A1})
+	if p.NotificationAllowed(ctx, w.A1, []string{dm}) {
+		t.Fatal("missing DM tenant binding must fail closed, not SQL NULL")
+	}
 	before := f.count.Load()
 	if !p.NotificationAllowed(ctx, w.A1, []string{w.ChanA}) {
 		t.Fatal("eligible bound native member must receive")

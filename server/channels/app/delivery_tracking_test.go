@@ -41,6 +41,9 @@ func startDeliveryAuditCapture(t *testing.T, th *TestHelper) *deliveryAuditCaptu
 		},
 	}
 	require.NoError(t, th.App.Srv().Audit.Configure(cfg))
+	// Close this file target before TempDir cleanup on Windows. The server's
+	// later cleanup otherwise retains its open handle until after removal.
+	t.Cleanup(func() { require.NoError(t, th.App.Srv().Audit.Configure(mlog.LoggerConfiguration{})) })
 
 	return &deliveryAuditCapture{t: t, th: th, path: path}
 }

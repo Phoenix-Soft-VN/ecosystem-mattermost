@@ -31,7 +31,7 @@ func (p *Policy) NotificationAllowed(ctx context.Context, userID string, channel
  LEFT JOIN channels c ON c.id=requested.id AND c.deleteat=0
  LEFT JOIN channelmembers cm ON cm.channelid=c.id AND cm.userid=$1
  LEFT JOIN phoenix_channel_bindings cb ON cb.channel_id=c.id
- WHERE c.id IS NULL OR cm.userid IS NULL OR NOT(c.teamid=tb.team_id OR (c.teamid='' AND cb.tenant_id=ub.tenant_id)))
+ WHERE c.id IS NULL OR cm.userid IS NULL OR NOT COALESCE(c.teamid=tb.team_id OR (c.teamid='' AND cb.tenant_id=ub.tenant_id),false))
  ORDER BY sb.expires_at DESC,sb.session_id LIMIT 1`, userID, pq.Array(channelIDs), p.now().UnixMilli()).Scan(
 		&actor.SessionID, &actor.Issuer, &actor.Sub, &actor.SID, &actor.TenantID, &actor.UserID, &kind, &actor.AccessVersion, &actor.TeamID)
 	if err != nil || p.driftError(actor.TenantID) != nil {
