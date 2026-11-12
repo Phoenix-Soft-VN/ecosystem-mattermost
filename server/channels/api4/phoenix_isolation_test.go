@@ -83,6 +83,30 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	again, notifyErr := service.Notify(ctx, adapter, request)
 	require.NoError(t, notifyErr)
 	require.Equal(t, first.PostID, again.PostID)
+	// Gateway profile synchronization must update already connected clients.
+	ws := th.CreateConnectedWebSocketClient(t)
+	t.Cleanup(ws.Close)
+	select {
+	case <-ws.ResponseChannel:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native websocket authentication did not complete")
+	}
+	require.NoError(t, adapter.UpdateAccountProfile(ctx, th.BasicUser2.Id, th.BasicUser2.Email,
+		phoenix.Profile{FirstName: "SyncedByGateway"}))
+	profileEvent := false
+	deadline := time.After(5 * time.Second)
+	for !profileEvent {
+		select {
+		case event := <-ws.EventChannel:
+			if event.EventType() == model.WebsocketEventUserUpdated {
+				data, err := json.Marshal(event.GetData())
+				require.NoError(t, err)
+				profileEvent = bytes.Contains(data, []byte("SyncedByGateway")) && bytes.Contains(data, []byte(th.BasicUser2.Id))
+			}
+		case <-deadline:
+			t.Fatal("Gateway profile update must reach the same-tenant native websocket")
+		}
+	}
 	allowed, _, err := th.Client.GetUsersByIds(ctx, []string{th.BasicUser.Id, th.BasicUser2.Id, foreign.Id, "zzzzzzzzzzzzzzzzzzzzzzzzzz"})
 	require.NoError(t, err)
 	require.Len(t, allowed, 2)

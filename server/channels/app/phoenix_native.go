@@ -197,8 +197,17 @@ func (p *PhoenixNative) UpdateAccountProfile(ctx context.Context, userID, email 
 	if !changed {
 		return nil
 	}
-	_, err = p.a.UpdateUser(p.rctx(ctx), u, false)
-	return asErr(err)
+	if _, err = p.a.UpdateUser(p.rctx(ctx), u, false); err != nil {
+		return err
+	}
+	// Gateway owns the profile. Publish the normal sanitized native event so
+	// connected tenant peers see its new fields, without password/email notices.
+	updated, err := p.a.GetUser(p.rctx(ctx), userID)
+	if err != nil {
+		return err
+	}
+	p.a.sendUpdatedUserEvent(updated)
+	return nil
 }
 
 func (p *PhoenixNative) AddTeamMember(ctx context.Context, teamID, userID string) error {
