@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"net"
 	"net/http"
 	"os"
@@ -517,6 +518,15 @@ func (wc *WebConn) writePump() {
 	ticker := time.NewTicker(pingInterval)
 	authTicker := time.NewTicker(authCheckInterval)
 
+	// Phoenix background deadline: an idle connection must notice a revoked session, a revoked
+	// CHAT entitlement or an unreachable authority without any frame or invalidation message.
+	var phoenixTick <-chan time.Time
+	if phoenix.Default() != nil {
+		pt := time.NewTicker(phoenixLivenessInterval)
+		defer pt.Stop()
+		phoenixTick = pt.C
+	}
+
 	defer func() {
 		ticker.Stop()
 		authTicker.Stop()
@@ -578,6 +588,12 @@ func (wc *WebConn) writePump() {
 				continue
 			}
 
+			// Revalidate at write time: the event may have waited in the send buffer while
+			// membership, access or tenant state changed.
+			if evtOk && !wc.phoenixAllowsEvent(evt) {
+				continue
+			}
+
 			buf.Reset()
 			var err error
 			if evtOk {
@@ -628,6 +644,12 @@ func (wc *WebConn) writePump() {
 		case <-wc.endWritePump:
 			return
 
+		case <-phoenixTick:
+			if !wc.phoenixStillAuthorized() {
+				wc.Platform.logger.Info("websocket.phoenix: closing connection, access ended", mlog.String("user_id", wc.UserId))
+				return
+			}
+
 		case <-authTicker.C:
 			if wc.GetSessionToken() == "" {
 				wc.Platform.logger.Debug("websocket.authTicker: did not authenticate", mlog.Stringer("ip_address", wc.WebSocket.RemoteAddr()))
@@ -648,6 +670,10 @@ func (wc *WebConn) writeMessageBuf(msgType int, data []byte) error {
 }
 
 func (wc *WebConn) writeMessage(msg *model.WebSocketEvent) error {
+	// Replayed (dead queue) events are revalidated like live ones.
+	if !wc.phoenixAllowsEvent(msg) {
+		return nil
+	}
 	// We don't use the encoder from the write pump because it's unwieldy to pass encoders
 	// around, and this is only called during initialization of the webConn.
 	var buf bytes.Buffer
@@ -885,6 +911,11 @@ func (wc *WebConn) ShouldSendEventToGuest(msg *model.WebSocketEvent) bool {
 func (wc *WebConn) ShouldSendEvent(msg *model.WebSocketEvent) bool {
 	// IMPORTANT: Do not send event if WebConn does not have a session and completed MFA
 	if !wc.IsAuthenticated() {
+		return false
+	}
+
+	// Phoenix tenant boundary: per-recipient delivery guard (AND with the native checks below).
+	if !wc.phoenixAllowsEvent(msg) {
 		return false
 	}
 

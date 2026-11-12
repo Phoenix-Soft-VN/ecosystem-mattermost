@@ -2716,12 +2716,21 @@ func (a *App) UserCanSeeOtherUser(rctx request.CTX, userID string, otherUserId s
 		return true, nil
 	}
 
+	if visible, handled, perr := a.phoenixUserVisible(rctx, userID, otherUserId); handled {
+		return visible, perr
+	}
+
 	restrictions, err := a.GetViewUsersRestrictions(rctx, userID)
 	if err != nil {
 		return false, err
 	}
 
 	if restrictions == nil {
+		return true, nil
+	}
+	// A nil native restriction means global view_members. Phoenix converts it to a
+	// tenant-only predicate for queries; the tenant half was already checked above.
+	if restrictions.PhoenixTenantID != "" && restrictions.Teams == nil && restrictions.Channels == nil {
 		return true, nil
 	}
 
@@ -2758,6 +2767,15 @@ func (a *App) userBelongsToChannels(userID string, channelIDs []string) (bool, *
 }
 
 func (a *App) GetViewUsersRestrictions(rctx request.CTX, userID string) (*model.ViewUsersRestrictions, *model.AppError) {
+	if r, e, handled := a.phoenixViewRestrictions(rctx, userID, func() (*model.ViewUsersRestrictions, *model.AppError) {
+		return a.getNativeViewUsersRestrictions(rctx, userID)
+	}); handled {
+		return r, e
+	}
+	return a.getNativeViewUsersRestrictions(rctx, userID)
+}
+
+func (a *App) getNativeViewUsersRestrictions(rctx request.CTX, userID string) (*model.ViewUsersRestrictions, *model.AppError) {
 	if a.HasPermissionTo(rctx, userID, model.PermissionViewMembers) {
 		return nil, nil
 	}

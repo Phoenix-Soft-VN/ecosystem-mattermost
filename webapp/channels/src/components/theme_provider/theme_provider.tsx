@@ -28,7 +28,9 @@ export default function ThemeProvider({children}: {children: React.ReactNode}) {
     });
 
     useEffect(() => {
-        applyTheme(theme);
+        if (!document.documentElement.hasAttribute('data-phoenix-mode')) {
+            applyTheme(theme);
+        }
     }, [theme]);
 
     const context = useMemo(() => ({

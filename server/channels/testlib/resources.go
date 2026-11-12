@@ -172,7 +172,7 @@ func SetupTestResources() (string, error) {
 				}
 			}
 		} else if testResource.action == actionSymlink {
-			destDir := path.Dir(resourceDestInTemp)
+			destDir := filepath.Dir(resourceDestInTemp)
 			if destDir != "." {
 				err = os.MkdirAll(destDir, os.ModePerm)
 				if err != nil {

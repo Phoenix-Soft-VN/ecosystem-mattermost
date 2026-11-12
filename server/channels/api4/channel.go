@@ -5,6 +5,7 @@ package api4
 
 import (
 	"encoding/json"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"net/http"
 	"strconv"
 	"strings"
@@ -820,6 +821,10 @@ func createDirectChannel(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !phoenixRequireParticipants(c, userIds) {
+		return
+	}
+
 	auditRec := c.MakeAuditRecord(model.AuditEventCreateDirectChannel, model.AuditStatusFail)
 	model.AddEventParameterToAuditRec(auditRec, "user_ids", userIds)
 	defer c.LogAuditRec(auditRec)
@@ -948,6 +953,10 @@ func createGroupChannel(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		userIds = append(userIds, c.AppContext.Session().UserId)
+	}
+
+	if !phoenixRequireParticipants(c, userIds) {
+		return
 	}
 
 	auditRec := c.MakeAuditRecord(model.AuditEventCreateGroupChannel, model.AuditStatusFail)
@@ -1779,12 +1788,25 @@ func searchAllChannels(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	fromSysConsole := true
+	if actor, ok := phoenix.ActorFrom(c.AppContext.Context()); ok && !actor.Operator {
+		for _, id := range props.TeamIds {
+			if id != actor.TeamID {
+				c.Err = phoenixNotFound()
+				return
+			}
+		}
+		props.TeamIds = []string{actor.TeamID}
+		fromSysConsole = false
+	}
 	if val := r.URL.Query().Get("system_console"); val != "" {
 		fromSysConsole, err = strconv.ParseBool(val)
 		if err != nil {
 			c.SetInvalidParam("system_console")
 			return
 		}
+	}
+	if actor, ok := phoenix.ActorFrom(c.AppContext.Context()); ok && !actor.Operator {
+		fromSysConsole = false
 	}
 
 	if !fromSysConsole {
@@ -2535,6 +2557,10 @@ func addChannelMember(c *Context, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		userIds = append(userIds, userId)
+	}
+
+	if !phoenixRequireParticipants(c, userIds) {
+		return
 	}
 
 	postRootId, ok := props["post_root_id"].(string)

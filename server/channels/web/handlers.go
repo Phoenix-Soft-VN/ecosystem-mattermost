@@ -373,6 +373,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if c.Err == nil && !c.AppContext.Session().Local {
+		h.phoenixGuard(c, r)
+	}
+
 	if c.Err == nil {
 		h.HandleFunc(c, w, r)
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"io"
 	"net/http"
 	"slices"
@@ -1191,6 +1192,11 @@ func getUsersByIds(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userIDs, allowedOK := phoenixAllowedUserIDs(c, userIDs)
+	if !allowedOK {
+		return
+	}
+
 	sinceString := r.URL.Query().Get("since")
 
 	options := &store.UserGetByIdsOpts{
@@ -2236,6 +2242,19 @@ func login(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	auditRec.AddEventResultState(user)
+
+	if pol := phoenix.Default(); pol != nil {
+		isOperator, opErr := pol.IsOperator(c.AppContext.Context(), user.Id)
+		if opErr != nil {
+			c.Err = model.NewAppError("login", phoenix.CodeNotReady, nil, "", http.StatusServiceUnavailable).Wrap(opErr)
+			return
+		}
+		if !isOperator {
+			c.LogAuditWithUserId(user.Id, "failure - native login is not available for chat principals")
+			c.Err = model.NewAppError("login", phoenix.CodeAccessDenied, nil, "", http.StatusForbidden)
+			return
+		}
+	}
 
 	if user.IsMagicLinkEnabled() {
 		if !*c.App.Config().GuestAccountsSettings.EnableGuestMagicLink {

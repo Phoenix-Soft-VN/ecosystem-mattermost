@@ -4,8 +4,11 @@
 package wsapi
 
 import (
+	"context"
+
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/shared/request"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 )
 
 func (api *API) InitUser() {
@@ -29,6 +32,16 @@ func (api *API) userTyping(req *model.WebSocketRequest) (map[string]any, *model.
 
 	if hasPermission, _ := api.App.SessionHasPermissionToChannel(request.EmptyContext(api.App.Log()), req.Session, channelId, model.PermissionCreatePost); !hasPermission {
 		return nil, NewInvalidWebSocketParamError(req.Action, "channel_id")
+	}
+
+	if pol := phoenix.Default(); pol != nil {
+		actor, rerr := pol.ResolveActor(context.Background(), req.Session.Id, req.Session.UserId)
+		if rerr != nil {
+			return nil, NewInvalidWebSocketParamError(req.Action, "channel_id")
+		}
+		if cerr := pol.CanAccessResource(context.Background(), actor, phoenix.ResChannel, channelId); cerr != nil {
+			return nil, NewInvalidWebSocketParamError(req.Action, "channel_id")
+		}
 	}
 
 	var parentId string

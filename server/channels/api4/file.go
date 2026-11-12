@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -268,6 +269,9 @@ NextPart:
 					return nil
 				}
 				if v != "" {
+					if !phoenixRequireResource(c, phoenix.ResChannel, v) {
+						return nil
+					}
 					c.Params.ChannelId = v
 				}
 
@@ -424,6 +428,9 @@ func uploadFileMultipartLegacy(c *Context, mr *multipart.Reader,
 		return nil
 	}
 	channelId := form.Value["channel_id"][0]
+	if !phoenixRequireResource(c, phoenix.ResChannel, channelId) {
+		return nil
+	}
 	c.Params.ChannelId = channelId
 	c.RequireChannelId()
 	if c.Err != nil {

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"slices"
 	"strconv"
 	"strings"
@@ -2163,6 +2164,11 @@ func (us SqlUserStore) GetChannelGroupUsers(channelID string) ([]*model.User, er
 func applyViewRestrictionsFilter(query sq.SelectBuilder, restrictions *model.ViewUsersRestrictions, distinct bool) sq.SelectBuilder {
 	if restrictions == nil {
 		return query
+	}
+
+	// Phoenix tenant boundary: ANDed into the query before pagination/count/search.
+	if restrictions.PhoenixTenantID != "" {
+		query = query.Where(phoenix.TenantUsersPredicate("Users.Id"), restrictions.PhoenixTenantID)
 	}
 
 	// If you have no access to teams or channels, return and empty result.

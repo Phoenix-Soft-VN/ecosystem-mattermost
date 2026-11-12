@@ -6,6 +6,7 @@ package api4
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"net/http"
 	"slices"
 	"strconv"
@@ -117,6 +118,10 @@ func createPost(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	post.SanitizeInput()
 	post.UserId = c.AppContext.Session().UserId
+
+	if !phoenixRequireResource(c, phoenix.ResChannel, post.ChannelId) || !phoenixRequireResource(c, phoenix.ResPost, post.RootId) {
+		return
+	}
 
 	auditRec := c.MakeAuditRecord(model.AuditEventCreatePost, model.AuditStatusFail)
 	defer c.LogAuditRecWithLevel(auditRec, app.LevelContent)
@@ -652,6 +657,25 @@ func getPostsByIds(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if pol, actor, ok := phoenixActor(c); !ok {
+		return
+	} else if pol != nil && !actor.Operator {
+		if len(postIDs) > phoenix.MaxBatchIDs {
+			c.SetInvalidParam("post_ids")
+			return
+		}
+		scoped, err := pol.FilterPostIDs(c.AppContext.Context(), actor, postIDs)
+		if err != nil {
+			phoenixFail(c, err)
+			return
+		}
+		postIDs = scoped
+		if len(postIDs) == 0 {
+			_ = json.NewEncoder(w).Encode([]*model.Post{})
+			return
+		}
+	}
+
 	if len(postIDs) > 1000 {
 		c.Err = model.NewAppError("getPostsByIds", "api.post.posts_by_ids.invalid_body.request_error", map[string]any{"MaxLength": 1000}, "", http.StatusBadRequest)
 		return
@@ -998,6 +1022,10 @@ func searchPostsInTeam(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func searchPostsInAllTeams(c *Context, w http.ResponseWriter, r *http.Request) {
+	if actor, ok := phoenix.ActorFrom(c.AppContext.Context()); ok && !actor.Operator {
+		searchPosts(c, w, r, actor.TeamID)
+		return
+	}
 	searchPosts(c, w, r, "")
 }
 

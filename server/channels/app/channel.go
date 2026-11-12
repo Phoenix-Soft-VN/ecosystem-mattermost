@@ -533,6 +533,11 @@ func (a *App) createDirectChannelWithUser(rctx request.CTX, user, otherUser *mod
 		return nil, model.NewAppError("createDirectChannelWithUser", "api.channel.create_channel.direct_channel.remote_restricted.app_error", nil, "", http.StatusForbidden)
 	}
 
+	phoenixTenant, tenantErr := a.phoenixDirectTenant(rctx, user.Id, otherUser.Id)
+	if tenantErr != nil {
+		return nil, tenantErr
+	}
+
 	channel, nErr := a.Srv().Store().Channel().CreateDirectChannel(rctx, user, otherUser, channelOptions...)
 	if nErr != nil {
 		var invErr *store.ErrInvalidInput
@@ -563,6 +568,10 @@ func (a *App) createDirectChannelWithUser(rctx request.CTX, user, otherUser *mod
 		default: // last fallback in case it doesn't map to an existing app error.
 			return nil, model.NewAppError("createDirectChannelWithUser", "app.channel.create_direct_channel.internal_error", nil, "", http.StatusInternalServerError).Wrap(nErr)
 		}
+	}
+
+	if bindErr := a.phoenixBindChannel(rctx, channel.Id, phoenixTenant); bindErr != nil {
+		return nil, bindErr
 	}
 
 	if err := a.Srv().Store().ChannelMemberHistory().LogJoinEvent(user.Id, channel.Id, model.GetMillis()); err != nil {
@@ -654,6 +663,11 @@ func (a *App) createGroupChannel(rctx request.CTX, userIDs []string, creatorID s
 	}
 	channelIsShared := len(remoteIDs) > 0
 
+	phoenixTenant, tenantErr := a.phoenixDirectTenant(rctx, userIDs...)
+	if tenantErr != nil {
+		return nil, tenantErr
+	}
+
 	if channelIsShared && !a.Config().FeatureFlags.EnableSharedChannelsDMs {
 		for _, user := range users {
 			if user.IsRemote() {
@@ -694,6 +708,10 @@ func (a *App) createGroupChannel(rctx request.CTX, userIDs []string, creatorID s
 		default: // last fallback in case it doesn't map to an existing app error.
 			return nil, model.NewAppError("CreateChannel", "app.channel.create_channel.internal_error", nil, "", http.StatusInternalServerError).Wrap(nErr)
 		}
+	}
+
+	if bindErr := a.phoenixBindChannel(rctx, channel.Id, phoenixTenant); bindErr != nil {
+		return nil, bindErr
 	}
 
 	for _, user := range users {

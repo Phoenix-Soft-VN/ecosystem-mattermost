@@ -6,6 +6,7 @@ package api4
 import (
 	"encoding/json"
 	"errors"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -42,6 +43,10 @@ func createUpload(c *Context, w http.ResponseWriter, r *http.Request) {
 	us.ReqFileId = ""
 
 	us.Filename = filepath.Base(us.Filename)
+
+	if !phoenixRequireResource(c, phoenix.ResChannel, us.ChannelId) {
+		return
+	}
 
 	auditRec := c.MakeAuditRecord(model.AuditEventCreateUpload, model.AuditStatusFail)
 	defer c.LogAuditRec(auditRec)

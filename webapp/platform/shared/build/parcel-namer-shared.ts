@@ -23,7 +23,7 @@ export default new Namer({
         }
 
         // Get the relative file path within the source folder
-        const relativeDir = path.posix.relative('./src', path.dirname(mainEntry.filePath));
+        const relativeDir = path.relative(path.resolve('./src'), path.dirname(mainEntry.filePath)).split(path.sep).join('/');
 
         let filename;
         if (bundle.type === 'js') {

@@ -5,6 +5,7 @@ package api4
 
 import (
 	"encoding/json"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"net/http"
 	"strings"
 
@@ -26,6 +27,10 @@ func saveReaction(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	reaction.EmojiName = strings.ToLower(reaction.EmojiName)
+
+	if !phoenixRequireResource(c, phoenix.ResPost, reaction.PostId) {
+		return
+	}
 
 	if !model.IsValidId(reaction.UserId) || !model.IsValidId(reaction.PostId) || reaction.EmojiName == "" || len(reaction.EmojiName) > model.EmojiNameMaxLength {
 		c.Err = model.NewAppError("saveReaction", "api.reaction.save_reaction.invalid.app_error", nil, "", http.StatusBadRequest)

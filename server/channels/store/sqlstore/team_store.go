@@ -6,6 +6,7 @@ package sqlstore
 import (
 	"database/sql"
 	"fmt"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"strings"
 
 	sq "github.com/mattermost/squirrel"
@@ -1727,6 +1728,10 @@ func applyTeamMemberViewRestrictionsFilter(query sq.SelectBuilder, restrictions 
 		return query
 	}
 
+	if restrictions.PhoenixTenantID != "" {
+		query = query.Where(phoenix.TenantUsersPredicate("TeamMembers.UserId"), restrictions.PhoenixTenantID)
+	}
+
 	// If you have no access to teams or channels, return and empty result.
 	if restrictions.Teams != nil && len(restrictions.Teams) == 0 && restrictions.Channels != nil && len(restrictions.Channels) == 0 {
 		return query.Where("1 = 0")
@@ -1755,6 +1760,10 @@ func applyTeamMemberViewRestrictionsFilter(query sq.SelectBuilder, restrictions 
 func applyTeamMemberViewRestrictionsFilterForStats(query sq.SelectBuilder, restrictions *model.ViewUsersRestrictions) sq.SelectBuilder {
 	if restrictions == nil {
 		return query
+	}
+
+	if restrictions.PhoenixTenantID != "" {
+		query = query.Where(phoenix.TenantUsersPredicate("Users.Id"), restrictions.PhoenixTenantID)
 	}
 
 	// If you have no access to teams or channels, return and empty result.

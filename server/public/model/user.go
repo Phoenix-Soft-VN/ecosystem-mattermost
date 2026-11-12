@@ -269,6 +269,9 @@ type UserForIndexing struct {
 type ViewUsersRestrictions struct {
 	Teams    []string
 	Channels []string
+	// PhoenixTenantID, when set, ANDs the Phoenix tenant boundary into every user query that
+	// applies these restrictions. It is never derived from request input.
+	PhoenixTenantID string
 }
 
 //msgp:ignore GetUsersNotInChannelOptions

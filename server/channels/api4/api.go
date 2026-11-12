@@ -386,6 +386,7 @@ func Init(srv *app.Server) (*API, error) {
 	api.InitScheduledRecap()
 	api.InitCommand()
 	api.InitStatus()
+	api.InitPhoenix()
 	api.InitWebSocket()
 	api.InitEmoji()
 	api.InitOAuth()

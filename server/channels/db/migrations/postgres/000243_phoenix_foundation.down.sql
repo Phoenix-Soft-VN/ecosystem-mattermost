@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS phoenix_user_bindings_version_guard ON phoenix_user_bindings;
+DROP FUNCTION IF EXISTS phoenix_forbid_version_rollback();
+DROP TABLE IF EXISTS phoenix_replay_keys;
+DROP TABLE IF EXISTS phoenix_operator_accounts;
+DROP TABLE IF EXISTS phoenix_channel_bindings;
+DROP TABLE IF EXISTS phoenix_operation_keys;
+DROP TABLE IF EXISTS phoenix_auth_transactions;
+DROP TABLE IF EXISTS phoenix_session_bindings;
+DROP TABLE IF EXISTS phoenix_user_bindings;
+DROP TABLE IF EXISTS phoenix_tenant_bindings;

@@ -41,6 +41,7 @@ import {isTextDroppableEvent} from 'utils/utils';
 
 import LuxonController from './luxon_controller';
 import PerformanceReporterController from './performance_reporter_controller';
+import PhoenixShell from 'components/phoenix_shell';
 import RootProvider from './root_provider';
 import RootRedirect from './root_redirect';
 
@@ -312,6 +313,8 @@ export default class Root extends React.PureComponent<Props, State> {
                 <MobileViewWatcher/>
                 <LuxonController/>
                 <PerformanceReporterController/>
+                <PhoenixShell>
+                <div className='phoenix-shell__app'>
                 <Switch>
                     <Route
                         path={'/error'}
@@ -481,6 +484,8 @@ export default class Root extends React.PureComponent<Props, State> {
                         <Readout/>
                     </WithUserTheme>
                 </Switch>
+                </div>
+                </PhoenixShell>
             </RootProvider>
         );
     }

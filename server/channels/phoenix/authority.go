@@ -1,0 +1,258 @@
+// Copyright (c) Phoenix-Soft-VN. Licensed under the same terms as the surrounding fork (see LICENSE.txt).
+
+package phoenix
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// BridgeAudience values are operation specific (contracts C2) and distinct from OIDC RS256.
+const (
+	AudienceChatAccess     = "gateway:internal:chat-access"
+	AudienceShellContext   = "gateway:internal:ui-shell-context"
+	AudienceShellNav       = "gateway:internal:ui-shell-navigation"
+	AudienceUIPreferences  = "gateway:internal:ui-preferences"
+	ScopeChatAccessContext = "chat:access-context"
+	BridgeAppCode          = "chat"
+	assertionTTL           = 45 * time.Second
+)
+
+// BridgeSigner mints the HMAC-SHA256 assertions of the Gateway UI bridge. They are keyed by the
+// registered "chat" app secret and bound to one audience; they never reuse the OIDC RS256 path.
+type BridgeSigner struct {
+	Issuer string
+	Secret []byte
+	Now    func() time.Time
+}
+
+func (b *BridgeSigner) now() time.Time {
+	if b.Now != nil {
+		return b.Now()
+	}
+	return time.Now()
+}
+
+func randomID() string {
+	buf := make([]byte, 16)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
+
+func b64(v []byte) string { return base64.RawURLEncoding.EncodeToString(v) }
+
+// Sign returns b64url(header).b64url(payload).b64url(hmac). sub and tenantID come from the
+// immutable session binding, never from request input.
+func (b *BridgeSigner) Sign(audience, scope, sub, tenantID, sid string) string {
+	now := b.now()
+	claims := map[string]any{
+		"iss": b.Issuer, "sub": sub, "tenant_id": tenantID, "sid": sid, "app": BridgeAppCode,
+		"aud": audience, "iat": now.Unix(), "exp": now.Add(assertionTTL).Unix(), "jti": randomID(),
+	}
+	if scope != "" {
+		claims["scope"] = scope
+	}
+	head, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	body, _ := json.Marshal(claims)
+	signed := b64(head) + "." + b64(body)
+	mac := hmac.New(sha256.New, b.Secret)
+	mac.Write([]byte(signed))
+	return signed + "." + b64(mac.Sum(nil))
+}
+
+func httpClientWithCA(caFile string, timeout time.Duration) (*http.Client, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, err
+		}
+		pool, _ := x509.SystemCertPool()
+		if pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("no certificate in CA bundle")
+		}
+		cfg.RootCAs = pool
+	}
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: cfg}}, nil
+}
+
+// AuthorityDecision is the Gateway answer for one (sub, sid, tenant) (contracts C2).
+type AuthorityDecision struct {
+	Active          bool      `json:"active"`
+	ChatEntitled    bool      `json:"chatEntitled"`
+	MembershipState string    `json:"membershipState"`
+	TenantState     string    `json:"tenantState"`
+	AccessVersion   int64     `json:"accessVersion"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+}
+
+// AuthorityClient calls the Gateway POST /internal/chat/access-context.
+type AuthorityClient struct {
+	URL    string
+	Signer *BridgeSigner
+	Issuer string // principal issuer reported in the request body (the Gateway OIDC issuer)
+	HTTP   *http.Client
+}
+
+// ErrAuthorityUnavailable is returned when the Gateway cannot answer; it closes access.
+var ErrAuthorityUnavailable = newErr(http.StatusServiceUnavailable, CodeAuthorityDown, "authority unavailable")
+
+// AccessContext asks the Gateway; transport errors, non-200 answers and malformed bodies all
+// mean "cannot tell", which callers must treat as no access (fail closed).
+func (c *AuthorityClient) AccessContext(ctx context.Context, sub, sid, tenantID string) (AuthorityDecision, error) {
+	assertion := c.Signer.Sign(AudienceChatAccess, ScopeChatAccessContext, sub, tenantID, sid)
+	body, _ := json.Marshal(map[string]string{"issuer": c.Issuer, "sub": sub, "sid": sid, "tenantId": tenantID, "assertion": assertion})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/internal/chat/access-context", strings.NewReader(string(body)))
+	if err != nil {
+		return AuthorityDecision{}, ErrAuthorityUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return AuthorityDecision{}, wrapErr(http.StatusServiceUnavailable, CodeAuthorityDown, "authority unreachable", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusOK {
+		return AuthorityDecision{}, newErr(http.StatusServiceUnavailable, CodeAuthorityDown, "authority returned an error")
+	}
+	var d AuthorityDecision
+	if err := json.Unmarshal(data, &d); err != nil {
+		return AuthorityDecision{}, newErr(http.StatusServiceUnavailable, CodeAuthorityDown, "authority response malformed")
+	}
+	return d, nil
+}
+
+// AuthorityMaxAge bounds a positive decision (contracts C2: at most 30 s). The bound is
+// 20 s so that, with the 5 s background tick, an idle connection of a revoked principal is
+// closed within 25 s of the revoke even if neither a frame nor an invalidation arrives.
+const AuthorityMaxAge = 20 * time.Second
+
+type authorityEntry struct {
+	tenantID string
+	version  int64
+	decision AuthorityDecision
+	fetched  time.Time // carries a monotonic reading; ages are measured with time.Since
+	err      *Error
+}
+
+// Authority is the live access cache. Entries are per native session and tenant; one session
+// never reads another's entry. Age uses the monotonic clock, so wall-clock jumps cannot extend a grant.
+type Authority struct {
+	Client *AuthorityClient
+	// OnInactive is called when the Gateway says the Gateway session is gone (revoked logout).
+	OnInactive func(ctx context.Context, sessionID string)
+	MaxAge     time.Duration
+
+	mu      sync.Mutex
+	entries map[string]authorityEntry
+	locks   keyedMutex
+}
+
+func NewAuthority(c *AuthorityClient) *Authority {
+	return &Authority{Client: c, MaxAge: AuthorityMaxAge, entries: map[string]authorityEntry{}}
+}
+
+func (a *Authority) freshFor(e authorityEntry) time.Duration {
+	age := time.Since(e.fetched)
+	limit := a.MaxAge
+	if !e.decision.ExpiresAt.IsZero() {
+		if until := time.Until(e.decision.ExpiresAt); until < limit {
+			limit = until
+		}
+	}
+	return limit - age
+}
+
+// ValidFor reports how long the cached decision for a session can still be used (0 if none).
+func (a *Authority) ValidFor(sessionID string) time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if e, ok := a.entries[sessionID]; ok {
+		if d := a.freshFor(e); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// Invalidate drops the entries of one session (push invalidation; never the only mechanism).
+func (a *Authority) Invalidate(sessionID string) {
+	a.mu.Lock()
+	delete(a.entries, sessionID)
+	a.mu.Unlock()
+}
+
+// Check validates a bound session against the Gateway, using the cache while it is fresh.
+func (a *Authority) Check(ctx context.Context, actor ActorContext) error {
+	unlock := a.locks.Lock(actor.SessionID)
+	defer unlock()
+
+	a.mu.Lock()
+	e, ok := a.entries[actor.SessionID]
+	a.mu.Unlock()
+	if ok && e.tenantID == actor.TenantID && e.version == actor.AccessVersion && a.freshFor(e) > 0 {
+		return decisionError(e)
+	}
+
+	d, err := a.Client.AccessContext(ctx, actor.Sub, actor.SID, actor.TenantID)
+	entry := authorityEntry{tenantID: actor.TenantID, version: actor.AccessVersion, decision: d, fetched: time.Now()}
+	if err != nil {
+		var pe *Error
+		if !errors.As(err, &pe) {
+			pe = ErrAuthorityUnavailable
+		}
+		// An outage is not cached as a decision; the next request asks again.
+		a.mu.Lock()
+		delete(a.entries, actor.SessionID)
+		a.mu.Unlock()
+		return pe
+	}
+	if d.Active && (d.ExpiresAt.IsZero() || !d.ExpiresAt.After(time.Now())) {
+		return ErrAuthorityUnavailable
+	}
+	switch {
+	case !d.Active:
+		entry.err = newErr(http.StatusUnauthorized, CodeAuthInvalid, "gateway session is not active")
+		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second) // short negative cache only
+	case !d.ChatEntitled || d.MembershipState != "ACTIVE" || d.TenantState != "ACTIVE":
+		entry.err = ErrAccessDenied
+		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second)
+	}
+	a.mu.Lock()
+	a.entries[actor.SessionID] = entry
+	a.mu.Unlock()
+	if !d.Active && a.OnInactive != nil {
+		a.OnInactive(ctx, actor.SessionID)
+	}
+	return decisionError(entry)
+}
+
+func decisionError(e authorityEntry) error {
+	if e.err != nil {
+		return e.err
+	}
+	return nil
+}
+
+// NewHTTPClient builds the outbound HTTPS client (optional extra CA, bounded timeout).
+func NewHTTPClient(caFile string, timeout time.Duration) (*http.Client, error) {
+	return httpClientWithCA(caFile, timeout)
+}

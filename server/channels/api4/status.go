@@ -71,7 +71,12 @@ func getUserStatusesByIds(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// No permission check required
+	userIds, allowedOK := phoenixAllowedUserIDs(c, userIds)
+	if !allowedOK {
+		return
+	}
+
+	// Native has no permission check here; the Phoenix tenant filter above restricts the ids.
 	statuses, appErr := c.App.GetUserStatusesByIds(userIds)
 	if appErr != nil {
 		c.Err = appErr
