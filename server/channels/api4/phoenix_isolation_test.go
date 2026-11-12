@@ -72,6 +72,22 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	_, response, err = th.Client.GetUser(ctx, foreign.Id, "")
 	require.Error(t, err)
 	require.Equal(t, 404, response.StatusCode)
+	// Shared native bootstrap reads must remain usable; administrative writes stay blocked.
+	for _, route := range []string{"/config/client?format=old", "/license/client?format=old"} {
+		req, e := http.NewRequest("GET", th.Client.URL+"/api/v4"+route, nil)
+		require.NoError(t, e)
+		req.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)
+		res, e := th.Client.HTTPClient.Do(req)
+		require.NoError(t, e)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+	}
+	roles, _, err := th.Client.GetRolesByNames(ctx, []string{"system_user", "channel_user"})
+	require.NoError(t, err)
+	require.Len(t, roles, 2)
+	_, response, err = th.Client.GetAllRoles(ctx)
+	require.Error(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
 	countRequest, err := http.NewRequest("GET", th.Client.URL+"/api/v4/users/stats/filtered", nil)
 	require.NoError(t, err)
 	countRequest.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)

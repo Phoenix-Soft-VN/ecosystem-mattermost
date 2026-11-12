@@ -72,6 +72,12 @@ func phoenixError(err error) *model.AppError {
 }
 
 func phoenixRouteBlocked(r *http.Request) bool {
+	// Native bootstrap reads contain shared client settings and role definitions,
+	// not tenant resources. Preserve native validation and block every admin write.
+	if (r.Method == http.MethodGet && (r.URL.Path == "/api/v4/config/client" || r.URL.Path == "/api/v4/license/client")) ||
+		(r.Method == http.MethodPost && r.URL.Path == "/api/v4/roles/names") {
+		return false
+	}
 	for _, re := range customerBlockedRoutes {
 		if re.MatchString(r.URL.Path) {
 			return true
