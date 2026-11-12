@@ -6,6 +6,7 @@ import * as client from './client';
 import type {ShellSnapshot} from './client';
 import NativeClient from '../../../../platform/client/src/client4';
 
+jest.mock('components/initial_loading_screen',()=>({__esModule:true,default:{stop:jest.fn()}}));
 jest.mock('./client', () => ({...jest.requireActual('./client'), fetchShellContext: jest.fn(), fetchNavigation: jest.fn(), patchPreference: jest.fn()}));
 jest.mock('utils/utils', () => ({applyTheme: jest.fn()}));
 jest.mock('stores/redux_store', () => ({__esModule: true, default: {dispatch: jest.fn()}}));

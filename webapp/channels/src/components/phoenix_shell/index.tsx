@@ -3,6 +3,8 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {UserTypes} from 'mattermost-redux/action_types';
 import store from 'stores/redux_store';
+import InitialLoadingScreen from 'components/initial_loading_screen';
+import {registerPhoenixSessionLifecycle, NATIVE_SESSION_CLEARED} from './session_lifecycle';
 
 import type {AppTile, ColorMode, Navigation, ShellSnapshot} from './client';
 import {ERROR_COPY, ShellError, fetchNavigation, fetchShellContext, patchPreference} from './client';
@@ -16,7 +18,7 @@ type Phase =
     | {name: 'error'; error: ShellError}
     | {name: 'ready'; snapshot: ShellSnapshot; nav: Navigation | null; logoutUrl: string | null};
 
-const REVALIDATE_MS = 15000;
+const REVALIDATE_MS = 5000;
 const MODES: Array<{value: ColorMode; label: string}> = [
     {value: 'light', label: 'Sáng'},
     {value: 'dark', label: 'Tối'},
@@ -64,8 +66,12 @@ export default function PhoenixShell({children}: Props) {
     const navTag = useRef<string | null>(null);
     const preferenceTag = useRef<string | null>(null);
     const prevTenant = useRef<string | null>(null);
+    const requestActive = useRef(false);
+    const authorityFailed = useRef(false);
 
     const load = useCallback(async () => {
+        if (requestActive.current) {return;}
+        requestActive.current = true;
         try {
             const ctx = await fetchShellContext();
             let nav: Navigation | null = null;
@@ -77,6 +83,12 @@ export default function PhoenixShell({children}: Props) {
                 }
             } catch {
                 nav = null; // launcher is optional; the shell itself stays usable
+            }
+            if (authorityFailed.current) {
+                // A verified recovery starts native bootstrap with the retained
+                // HttpOnly SSO session, after all prior-user state was purged.
+                window.location.reload();
+                return;
             }
             const snapshot = ctx.body as ShellSnapshot;
             preferenceTag.current = ctx.etag;
@@ -91,16 +103,27 @@ export default function PhoenixShell({children}: Props) {
             setPhase((p) => ({name: 'ready', snapshot, nav: nav ?? (p.name === 'ready' ? p.nav : null), logoutUrl: ctx.logoutUrl ?? (p.name === 'ready' ? p.logoutUrl : null)}));
         } catch (e) {
             const error = e instanceof ShellError ? e : new ShellError(503, 'PHOENIX_AUTHORITY_UNAVAILABLE');
+            authorityFailed.current = true;
             clearTheme(document.documentElement);
-            await clearSensitiveBrowserState();
             setPhase({name: 'error', error});
+            InitialLoadingScreen.stop('phoenix-authority');
+            await clearSensitiveBrowserState();
+        } finally {
+            requestActive.current = false;
         }
     }, []);
 
     useEffect(() => {
+        const release = registerPhoenixSessionLifecycle();
+        const cleared = () => {void load();};
+        window.addEventListener(NATIVE_SESSION_CLEARED, cleared);
         load();
         const t = window.setInterval(load, REVALIDATE_MS);
-        return () => window.clearInterval(t);
+        return () => {
+            window.clearInterval(t);
+            window.removeEventListener(NATIVE_SESSION_CLEARED, cleared);
+            release();
+        };
     }, [load]);
 
     useEffect(() => {

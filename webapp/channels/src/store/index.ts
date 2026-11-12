@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {phoenixOwnsSessionLifecycle, NATIVE_SESSION_CLEARED} from 'components/phoenix_shell/session_lifecycle';
+
 import baseLocalForage from 'localforage';
 import {extendPrototype} from 'localforage-observable';
 import type {Store} from 'redux';
@@ -110,6 +112,13 @@ export default function configureStore(preloadedState?: DeepPartial<GlobalState>
 
                 persistor.purge().then(() => {
                     cleanLocalStorage();
+                    if (phoenixOwnsSessionLifecycle()) {
+                        // The native state is purged, but the mounted boundary must
+                        // retain its error/retry screen. Server SSO owns cookies;
+                        // a native redirect here hides the denial behind bootstrap.
+                        window.dispatchEvent(new Event(NATIVE_SESSION_CLEARED));
+                        return;
+                    }
                     clearUserCookie();
 
                     // Preserve any query string parameters on logout, including parameters

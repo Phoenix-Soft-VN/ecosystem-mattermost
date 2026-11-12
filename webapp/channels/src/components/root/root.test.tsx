@@ -17,6 +17,7 @@ import type {Props} from './root';
 import Root, {doesRouteBelongToTeamControllerRoutes} from './root';
 
 jest.mock('actions/telemetry_actions');
+jest.mock('components/phoenix_shell',()=>({children}: {children:React.ReactNode})=><div data-testid='phoenix-boundary'>{children}</div>);
 
 jest.mock('components/announcement_bar', () => () => <div/>);
 jest.mock('components/team_sidebar', () => () => <div/>);
@@ -115,6 +116,13 @@ describe('components/Root', () => {
 
     afterAll(() => {
         window.matchMedia = originalMatchMedia;
+    });
+
+    // Mutation: native config/me failure must not prevent the authority boundary from mounting.
+    test('mounts Phoenix authority before native bootstrap resolves', () => {
+        const props={...baseProps,actions:{...baseProps.actions,loadConfigAndMe:jest.fn(()=>new Promise(()=>{}))}};
+        const view=renderWithContext(<Root {...props}/>);
+        expect(view.getByTestId('phoenix-boundary')).toBeInTheDocument();
     });
 
     test('should load config and license on mount and redirect to sign-up page', async () => {

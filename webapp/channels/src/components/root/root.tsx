@@ -304,17 +304,13 @@ export default class Root extends React.PureComponent<Props, State> {
     };
 
     render() {
-        if (!this.state.shouldMountAppRoutes) {
-            return <div/>;
-        }
-
         return (
             <RootProvider>
                 <MobileViewWatcher/>
                 <LuxonController/>
                 <PerformanceReporterController/>
                 <PhoenixShell>
-                <div className='phoenix-shell__app'>
+                {this.state.shouldMountAppRoutes && <div className='phoenix-shell__app'>
                 <Switch>
                     <Route
                         path={'/error'}
@@ -484,7 +480,7 @@ export default class Root extends React.PureComponent<Props, State> {
                         <Readout/>
                     </WithUserTheme>
                 </Switch>
-                </div>
+                </div>}
                 </PhoenixShell>
             </RootProvider>
         );
