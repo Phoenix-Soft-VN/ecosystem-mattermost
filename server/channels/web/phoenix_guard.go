@@ -27,7 +27,8 @@ var customerBlockedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/api/v4/users/tokens(/|$)`),
 	regexp.MustCompile(`^/api/v4/users/[^/]+/tokens(/|$)`),
 	regexp.MustCompile(`^/api/v4/users/[^/]+/(auth|mfa|password|email/verify/member)(/|$)`),
-	regexp.MustCompile(`^/api/v4/users/(password|email|mfa|login/(switch|cws|sso)|logout/everywhere)(/|$)`),
+	regexp.MustCompile(`^/api/v4/users/(password|mfa|login/(switch|cws|sso)|logout/everywhere)(/|$)`),
+	regexp.MustCompile(`^/api/v4/users/email/(verify|verify/send|verify/switch|verify/complete)(/|$)`),
 	regexp.MustCompile(`^/api/v4/users/login/.+`),
 	regexp.MustCompile(`^/api/v4/teams/invite(/|$)`),
 	regexp.MustCompile(`^/api/v4/teams/[^/]+/(invite|import)(/|$)`),
@@ -184,6 +185,13 @@ func (h Handler) phoenixGuard(c *Context, r *http.Request) {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(data))
+		// Enforce the request cap before native SortedArrayFromJSON removes
+		// duplicates, otherwise 201 identical IDs bypass the input limit.
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) == nil && len(items) > phoenix.MaxBatchIDs {
+			c.Err = model.NewAppError("phoenixGuard", phoenix.CodeInvalidRequest, nil, "too many items (max 200)", http.StatusBadRequest)
+			return
+		}
 		var body map[string]any
 		if json.Unmarshal(data, &body) == nil {
 			checkFields(body)

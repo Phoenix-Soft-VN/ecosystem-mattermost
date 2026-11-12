@@ -2,12 +2,15 @@
 package api4
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/v8/channels/app"
 	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/stretchr/testify/require"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -68,9 +71,44 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	_, response, err = th.Client.GetUser(ctx, foreign.Id, "")
 	require.Error(t, err)
 	require.Equal(t, 404, response.StatusCode)
+	// A tenant bot must provision without an unbound cross-tenant creator DM.
+	store := phoenix.NewStore(db, nil)
+	require.NoError(t, store.RegisterOperator(ctx, th.SystemAdminUser.Id, "native-fixture"))
+	adapter := app.NewPhoenixNative(th.App)
+	service := phoenix.NewService(store, adapter)
+	request := phoenix.NotifyRequest{Caller: "native-fixture", OperationKey: model.NewId(), TenantID: tenantA,
+		ChannelID: th.BasicChannel.Id, Message: "tenant bot positive control"}
+	first, notifyErr := service.Notify(ctx, adapter, request)
+	require.NoError(t, notifyErr)
+	again, notifyErr := service.Notify(ctx, adapter, request)
+	require.NoError(t, notifyErr)
+	require.Equal(t, first.PostID, again.PostID)
 	allowed, _, err := th.Client.GetUsersByIds(ctx, []string{th.BasicUser.Id, th.BasicUser2.Id, foreign.Id, "zzzzzzzzzzzzzzzzzzzzzzzzzz"})
 	require.NoError(t, err)
 	require.Len(t, allowed, 2)
+	// Regression: the HTTP cap applies before the native parser deduplicates.
+	batch := make([]string, 201)
+	for i := range batch {
+		batch[i] = th.BasicUser.Id
+	}
+	blob, err := json.Marshal(batch)
+	require.NoError(t, err)
+	for _, route := range []string{"/users/ids", "/users/status/ids"} {
+		request, err := http.NewRequest("POST", th.Client.URL+"/api/v4"+route, bytes.NewReader(blob))
+		require.NoError(t, err)
+		request.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)
+		request.Header.Set("Content-Type", "application/json")
+		result, err := th.Client.HTTPClient.Do(request)
+		require.NoError(t, err)
+		result.Body.Close()
+		require.Equal(t, 400, result.StatusCode, route+" repeated IDs must still count")
+	}
+	_, response, err = th.Client.GetUserByEmail(ctx, th.BasicUser2.Email, "")
+	require.NoError(t, err)
+	require.Equal(t, 200, response.StatusCode)
+	_, response, err = th.Client.GetUserByEmail(ctx, foreign.Email, "")
+	require.Error(t, err)
+	require.Equal(t, 404, response.StatusCode)
 	_, response, err = th.Client.CreateDirectChannel(ctx, th.BasicUser.Id, foreign.Id)
 	require.Error(t, err)
 	require.Equal(t, 404, response.StatusCode)

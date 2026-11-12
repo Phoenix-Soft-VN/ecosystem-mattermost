@@ -93,6 +93,13 @@ func (a *App) EnsureBot(rctx request.CTX, pluginID string, bot *model.Bot) (stri
 
 // CreateBot creates the given bot and corresponding user.
 func (a *App) CreateBot(rctx request.CTX, bot *model.Bot) (*model.Bot, *model.AppError) {
+	return a.createBot(rctx, bot, true)
+}
+
+// createBot can omit the creator DM for infrastructure provisioning. Tenant
+// bots are bound after account creation and must never DM an operator across
+// the tenant boundary while that binding is pending.
+func (a *App) createBot(rctx request.CTX, bot *model.Bot, notifyOwner bool) (*model.Bot, *model.AppError) {
 	vErr := bot.IsValidCreate()
 	if vErr != nil {
 		return nil, vErr
@@ -146,7 +153,7 @@ func (a *App) CreateBot(rctx request.CTX, bot *model.Bot) (*model.Bot, *model.Ap
 	var nfErr *store.ErrNotFound
 	if err != nil && !errors.As(err, &nfErr) {
 		return nil, model.NewAppError("CreateBot", "app.user.get.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	} else if ownerUser != nil {
+	} else if ownerUser != nil && notifyOwner {
 		// Send a message to the bot's creator to inform them that the bot needs to be added
 		// to a team and channel after it's created
 		channel, err := a.getOrCreateDirectChannelWithUser(rctx, user, ownerUser)

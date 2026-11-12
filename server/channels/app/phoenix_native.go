@@ -405,7 +405,7 @@ func (p *PhoenixNative) CreateTenantBot(ctx context.Context, username, displayNa
 	if err != nil {
 		return nil, errors.New("an explicitly bootstrapped operator must own tenant bots")
 	}
-	bot, appErr := p.a.CreateBot(rctx, &model.Bot{Username: username, DisplayName: displayName, Description: "Phoenix task notifications", OwnerId: owner})
+	bot, appErr := p.a.createBot(rctx, &model.Bot{Username: username, DisplayName: displayName, Description: "Phoenix task notifications", OwnerId: owner}, false)
 	if appErr != nil {
 		return nil, appErr
 	}
