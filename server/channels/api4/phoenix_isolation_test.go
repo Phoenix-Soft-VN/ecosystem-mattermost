@@ -72,6 +72,17 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	_, response, err = th.Client.GetUser(ctx, foreign.Id, "")
 	require.Error(t, err)
 	require.Equal(t, 404, response.StatusCode)
+	countRequest, err := http.NewRequest("GET", th.Client.URL+"/api/v4/users/stats/filtered", nil)
+	require.NoError(t, err)
+	countRequest.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)
+	countResponse, err := th.Client.HTTPClient.Do(countRequest)
+	require.NoError(t, err)
+	defer countResponse.Body.Close()
+	require.Equal(t, 200, countResponse.StatusCode)
+	var counts model.UsersStats
+	require.NoError(t, json.NewDecoder(countResponse.Body).Decode(&counts))
+	// Two bound customers in A; the native operator and B user are excluded.
+	require.EqualValues(t, 2, counts.TotalUsersCount)
 	// A tenant bot must provision without an unbound cross-tenant creator DM.
 	store := phoenix.NewStore(db, nil)
 	require.NoError(t, store.RegisterOperator(ctx, th.SystemAdminUser.Id, "native-fixture"))

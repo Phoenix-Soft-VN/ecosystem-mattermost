@@ -814,6 +814,14 @@ func getFilteredUsersStats(c *Context, w http.ResponseWriter, r *http.Request) {
 		c.SetPermissionError(model.PermissionSysconsoleReadUserManagementUsers)
 		return
 	}
+	// Elevated native roles retain the mandatory Phoenix tenant predicate.
+	// Apply it to the count query itself, before aggregate serialization.
+	restrictions, restrictionErr := c.App.GetViewUsersRestrictions(c.AppContext, c.AppContext.Session().UserId)
+	if restrictionErr != nil {
+		c.Err = restrictionErr
+		return
+	}
+	options.ViewRestrictions = restrictions
 
 	stats, err := c.App.GetFilteredUsersStats(options)
 	if err != nil {

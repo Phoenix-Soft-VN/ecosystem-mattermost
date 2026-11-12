@@ -72,7 +72,7 @@ func (wc *WebConn) phoenixAllowsEvent(evt *model.WebSocketEvent) bool {
 }
 
 // phoenixLivenessInterval is the background liveness period for WebSocket connections. With the
-// 20 s authority cache the end-to-end bound after a revoke is about 25 s, inside the 30 s contract.
+// bounded authority cache and refresh deadline, revocation stays inside the 30 s contract.
 const phoenixLivenessInterval = 5 * time.Second
 
 // phoenixStillAuthorized re-resolves the connection's actor through the live Gateway authority.
@@ -82,9 +82,18 @@ func (wc *WebConn) phoenixStillAuthorized() bool {
 	if pol == nil {
 		return true
 	}
+	// Native cache invalidation clears the cached session of an existing socket.
+	// Reload it through native authentication; nil must not turn a revoked
+	// authenticated connection into a fresh challenge connection.
+	if wc.UserId == "" {
+		return true
+	}
+	if !wc.IsBasicAuthenticated() {
+		return false
+	}
 	session := wc.GetSession()
 	if session == nil {
-		return true
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
