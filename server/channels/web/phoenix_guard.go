@@ -47,6 +47,8 @@ var customerBlockedMethodRoutes = []struct {
 	re      *regexp.Regexp
 	methods map[string]bool
 }{
+	{regexp.MustCompile(`^/api/v4/users/[^/]+(/patch)?$`), map[string]bool{http.MethodPut: true, http.MethodPatch: true}},
+	{regexp.MustCompile(`^/api/v4/users/[^/]+/image$`), map[string]bool{http.MethodPost: true, http.MethodDelete: true}},
 	{regexp.MustCompile(`^/api/v4/users$`), map[string]bool{http.MethodPost: true}},
 	{regexp.MustCompile(`^/api/v4/teams$`), map[string]bool{http.MethodPost: true, http.MethodGet: true}},
 	{regexp.MustCompile(`^/api/v4/channels$`), map[string]bool{http.MethodGet: true}},

@@ -145,10 +145,12 @@ func wrapErr(status int, code, msg string, cause error) *Error {
 
 // Profile is the allowlisted set of Gateway profile fields mirrored to the native account.
 type Profile struct {
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
-	FirstName   string `json:"firstName,omitempty"`
-	LastName    string `json:"lastName,omitempty"`
+	AvatarURL     *string `json:"avatarUrl,omitempty"`
+	AvatarVersion *int64  `json:"avatarVersion,omitempty"`
+	Email         string  `json:"email,omitempty"`
+	DisplayName   string  `json:"displayName,omitempty"`
+	FirstName     string  `json:"firstName,omitempty"`
+	LastName      string  `json:"lastName,omitempty"`
 }
 
 // OperationRequest is the body of POST /phoenix/internal/v1/operations.

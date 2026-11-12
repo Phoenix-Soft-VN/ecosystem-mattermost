@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,6 +73,20 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	_, response, err = th.Client.GetUser(ctx, foreign.Id, "")
 	require.Error(t, err)
 	require.Equal(t, 404, response.StatusCode)
+	for _, route := range []string{"/users/" + th.BasicUser.Id, "/users/" + th.BasicUser.Id + "/patch", "/users/" + th.BasicUser.Id + "/image"} {
+		method := "PUT"
+		if strings.HasSuffix(route, "/image") {
+			method = "DELETE"
+		}
+		req, e := http.NewRequest(method, th.Client.URL+"/api/v4"+route, strings.NewReader(`{"nickname":"native-override"}`))
+		require.NoError(t, e)
+		req.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)
+		req.Header.Set("Content-Type", "application/json")
+		res, e := th.Client.HTTPClient.Do(req)
+		require.NoError(t, e)
+		res.Body.Close()
+		require.Equal(t, 403, res.StatusCode, "Gateway owns native profile/avatar")
+	}
 	// Shared native bootstrap reads must remain usable; administrative writes stay blocked.
 	for _, route := range []string{"/config/client?format=old", "/license/client?format=old"} {
 		req, e := http.NewRequest("GET", th.Client.URL+"/api/v4"+route, nil)

@@ -174,11 +174,17 @@ func (p *PhoenixNative) CreateAccountUser(ctx context.Context, username, email s
 	if created.Roles != model.SystemUserRoleId {
 		return nil, errors.New("customer account received an elevated native role; aborting")
 	}
+	if err := p.syncGatewayAvatar(ctx, created.Id, prof); err != nil {
+		return nil, err
+	}
 	return userInfo(created), nil
 }
 
 // UpdateAccountProfile mirrors the allowlisted Gateway profile fields only.
 func (p *PhoenixNative) UpdateAccountProfile(ctx context.Context, userID, email string, prof phoenix.Profile) error {
+	if err := p.syncGatewayAvatar(ctx, userID, prof); err != nil {
+		return err
+	}
 	u, err := p.a.GetUser(p.rctx(ctx), userID)
 	if err != nil {
 		return err

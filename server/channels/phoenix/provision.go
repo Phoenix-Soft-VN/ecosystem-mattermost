@@ -295,6 +295,9 @@ func (s *Service) ensureUser(ctx context.Context, req OperationRequest) (Operati
 				return OperationEvidence{}, ferr
 			}
 		}
+		if perr := s.syncProfile(ctx, user.ID, req.Issuer, req.Sub, profile); perr != nil {
+			return OperationEvidence{}, perr
+		}
 		if ub, err = s.store.AttachUser(ctx, req.Issuer, req.Sub, req.TenantID, user.ID, ActorCustomer); err != nil {
 			return OperationEvidence{}, err
 		}

@@ -254,6 +254,7 @@ export default function PhoenixShell({children}: Props) {
                         ))}
                     </div>
                     <div className='phoenix-shell__account'>
+                        {safeHttps(snapshot.account?.avatarUrl || undefined) && <img className='phoenix-shell__avatar' src={snapshot.account!.avatarUrl!} alt=''/>}
                         <span>{snapshot.account?.displayName}</span>
                         {safeHttps(logoutUrl || undefined) && <a href={logoutUrl as string}>{'Đăng xuất'}</a>}
                     </div>

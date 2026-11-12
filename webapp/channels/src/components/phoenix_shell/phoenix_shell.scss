@@ -65,6 +65,13 @@
         gap: 8px;
     }
 
+    &__avatar {
+        width: 28px;
+        height: 28px;
+        object-fit: cover;
+        border-radius: 50%;
+    }
+
     &__logo {
         max-height: 28px;
         max-width: 120px;
