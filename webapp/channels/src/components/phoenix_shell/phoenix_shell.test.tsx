@@ -4,6 +4,7 @@ import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import PhoenixShell from './index';
 import * as client from './client';
 import type {ShellSnapshot} from './client';
+import NativeClient from '../../../../platform/client/src/client4';
 
 jest.mock('./client', () => ({...jest.requireActual('./client'), fetchShellContext: jest.fn(), fetchNavigation: jest.fn(), patchPreference: jest.fn()}));
 jest.mock('utils/utils', () => ({applyTheme: jest.fn()}));
@@ -18,6 +19,22 @@ const snapshot: ShellSnapshot = {
 const shell = client.fetchShellContext as jest.MockedFunction<typeof client.fetchShellContext>;
 const navigation = client.fetchNavigation as jest.MockedFunction<typeof client.fetchNavigation>;
 const preference = client.patchPreference as jest.MockedFunction<typeof client.patchPreference>;
+
+// Break: omit the per-intent key or regenerate it inside a transport retry.
+test('task request has one browser intent key in its serialized HTTP body', async () => {
+    const native = new NativeClient();
+    const fetch = jest.spyOn(native, 'doFetch').mockResolvedValue({});
+    const uuid = jest.spyOn(crypto, 'randomUUID').mockReturnValue('921ef203-41db-4cd7-8f56-411dfd576a61');
+    try {
+        await native.executeCommand('/task Prepare acceptance', {channel_id: 'own-channel'});
+        const [, request] = fetch.mock.calls[0];
+        expect(JSON.parse(request.body as string)).toEqual({command: '/task Prepare acceptance', channel_id: 'own-channel', trigger_id: '921ef203-41db-4cd7-8f56-411dfd576a61'});
+        expect(uuid).toHaveBeenCalledTimes(1);
+        fetch.mockClear();
+        await native.executeCommand('/search ordinary', {channel_id: 'own-channel'});
+        expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toEqual({command: '/search ordinary', channel_id: 'own-channel'});
+    } finally { uuid.mockRestore(); fetch.mockRestore(); }
+});
 
 beforeEach(() => {
     jest.clearAllMocks();

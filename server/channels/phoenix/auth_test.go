@@ -155,6 +155,43 @@ func TestOIDCAbuse(t *testing.T) {
 
 // Break: caching past 30s, sharing authority across tenant/version, or serving after outage.
 func TestSessionDeadline(t *testing.T) {
+	t.Run("concurrent outage has one bounded refresh", func(t *testing.T) {
+		var requests atomic.Int32
+		blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(8 * time.Second):
+				w.WriteHeader(503)
+			}
+		}))
+		defer blocked.Close()
+		authority := NewAuthority(&AuthorityClient{URL: blocked.URL, HTTP: blocked.Client(), Issuer: testIssuer,
+			Signer: &BridgeSigner{Issuer: "native", Secret: []byte("lab-bridge")}})
+		if authority.MaxAge > 20*time.Second {
+			t.Fatal("cache must leave room for WS tick and refresh within 30s")
+		}
+		actor := ActorContext{SessionID: "outage-session", TenantID: "tenant-a", Sub: "a1", SID: "sid-a1", AccessVersion: 1}
+		results := make(chan error, 2)
+		for range 2 {
+			go func() { results <- authority.Check(context.Background(), actor) }()
+		}
+		deadline := time.After(6 * time.Second)
+		for range 2 {
+			select {
+			case err := <-results:
+				pe, ok := err.(*Error)
+				if !ok || pe.Status != 503 {
+					t.Fatalf("outage must fail closed, got %v", err)
+				}
+			case <-deadline:
+				t.Fatal("queued authority callers exceeded the refresh deadline")
+			}
+		}
+		if requests.Load() != 1 {
+			t.Fatal("queued HTTP/WS callers retried the same unavailable authority")
+		}
+	})
 	var mode atomic.Int32
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

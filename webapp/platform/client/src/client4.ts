@@ -3288,9 +3288,12 @@ export default class Client4 {
     };
 
     executeCommand = (command: string, commandArgs: CommandArgs) => {
+        // One key per user intent, retained in the HTTP request body if its
+        // transport retries. The server scopes it by immutable actor/channel.
+        const taskKey = /^\/task(?:\s|$)/i.test(command) ? {trigger_id: crypto.randomUUID()} : {};
         return this.doFetch<CommandResponse>(
             `${this.getCommandsRoute()}/execute`,
-            {method: 'post', body: JSON.stringify({command, ...commandArgs})},
+            {method: 'post', body: JSON.stringify({command, ...commandArgs, ...taskKey})},
         );
     };
 

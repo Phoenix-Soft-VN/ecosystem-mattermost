@@ -20,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/mattermost/mattermost/server/public/shared/mlog"
 	"github.com/mattermost/mattermost/server/public/shared/request"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 )
 
@@ -273,7 +274,24 @@ func (a *App) ExecuteCommand(rctx request.CTX, args *model.CommandArgs) (*model.
 		rctx.Logger().Warn("error occurred in generating trigger Id for a user ", mlog.Err(appErr))
 	}
 
+	requestKey := args.TriggerId
 	args.TriggerId = triggerId
+	// Phoenix /task is a built-in signed adapter, independent of the native
+	// custom integration switch (which stays disabled for customer installs).
+	if phoenix.Default() != nil && trigger == "task" {
+		if requestKey == "" {
+			requestKey = model.NewId()
+		}
+		if len(requestKey) > 128 {
+			return nil, model.NewAppError("command", "api.context.invalid_body_param.app_error", nil, "invalid command request key", http.StatusBadRequest)
+		}
+		args.TriggerId = requestKey // scoped by immutable user/channel in the signed envelope
+		cmd, response := a.tryExecuteBuiltInCommand(rctx, args, trigger, message)
+		if cmd != nil && response != nil {
+			response.TriggerId = clientTriggerId
+			return a.HandleCommandResponse(rctx, cmd, args, response, true)
+		}
+	}
 
 	// Plugins can override built in and custom commands
 	cmd, response, appErr := a.tryExecutePluginCommand(rctx, args)

@@ -117,6 +117,10 @@ var ErrAuthorityUnavailable = newErr(http.StatusServiceUnavailable, CodeAuthorit
 // AccessContext asks the Gateway; transport errors, non-200 answers and malformed bodies all
 // mean "cannot tell", which callers must treat as no access (fail closed).
 func (c *AuthorityClient) AccessContext(ctx context.Context, sub, sid, tenantID string) (AuthorityDecision, error) {
+	// Leave room for the positive cache and idle WS tick inside the 30s
+	// revocation bound, even when the shared Gateway stops answering.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	assertion := c.Signer.Sign(AudienceChatAccess, ScopeChatAccessContext, sub, tenantID, sid)
 	body, _ := json.Marshal(map[string]string{"issuer": c.Issuer, "sub": sub, "sid": sid, "tenantId": tenantID, "assertion": assertion})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/internal/chat/access-context", strings.NewReader(string(body)))
@@ -141,9 +145,9 @@ func (c *AuthorityClient) AccessContext(ctx context.Context, sub, sid, tenantID 
 }
 
 // AuthorityMaxAge bounds a positive decision (contracts C2: at most 30 s). The bound is
-// 20 s so that, with the 5 s background tick, an idle connection of a revoked principal is
-// closed within 25 s of the revoke even if neither a frame nor an invalidation arrives.
-const AuthorityMaxAge = 20 * time.Second
+// 18s + 5s background tick + 5s refresh deadline stays within 30s even
+// without a frame or invalidation, including a concurrent HTTP/WS refresh.
+const AuthorityMaxAge = 18 * time.Second
 
 type authorityEntry struct {
 	tenantID string
@@ -172,13 +176,13 @@ func NewAuthority(c *AuthorityClient) *Authority {
 
 func (a *Authority) freshFor(e authorityEntry) time.Duration {
 	age := time.Since(e.fetched)
-	limit := a.MaxAge
+	remaining := a.MaxAge - age
 	if !e.decision.ExpiresAt.IsZero() {
-		if until := time.Until(e.decision.ExpiresAt); until < limit {
-			limit = until
+		if until := time.Until(e.decision.ExpiresAt); until < remaining {
+			remaining = until
 		}
 	}
-	return limit - age
+	return remaining
 }
 
 // ValidFor reports how long the cached decision for a session can still be used (0 if none).
@@ -219,9 +223,12 @@ func (a *Authority) Check(ctx context.Context, actor ActorContext) error {
 		if !errors.As(err, &pe) {
 			pe = ErrAuthorityUnavailable
 		}
-		// An outage is not cached as a decision; the next request asks again.
+		// A short unavailable result is fail-closed, never a positive grant. It
+		// prevents queued HTTP/WS callers from each waiting another timeout.
+		entry.err = pe
+		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second)
 		a.mu.Lock()
-		delete(a.entries, actor.SessionID)
+		a.entries[actor.SessionID] = entry
 		a.mu.Unlock()
 		return pe
 	}

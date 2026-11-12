@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/v8/channels/app"
+	_ "github.com/mattermost/mattermost/server/v8/channels/app/slashcommands"
 	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/stretchr/testify/require"
 	"net/http"
@@ -110,6 +111,37 @@ func TestPhoenixIsolationHTTP(t *testing.T) {
 	allowed, _, err := th.Client.GetUsersByIds(ctx, []string{th.BasicUser.Id, th.BasicUser2.Id, foreign.Id, "zzzzzzzzzzzzzzzzzzzzzzzzzz"})
 	require.NoError(t, err)
 	require.Len(t, allowed, 2)
+	// /task remains available while custom native integrations stay disabled,
+	// and repeated transport of the same browser request keeps its signed key.
+	taskKeys := make(chan string, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope phoenix.TaskEnvelope
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&envelope))
+		taskKeys <- envelope.RequestID
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"DONE","text":"created task fixture"}`))
+	}))
+	defer callback.Close()
+	previousTask := phoenix.DefaultTask()
+	phoenix.SetDefaultTask(&phoenix.TaskCommand{GatewayURL: callback.URL, Secret: []byte("lab-task-key"), HTTP: callback.Client()})
+	defer phoenix.SetDefaultTask(previousTask)
+	_, err = db.Exec(`UPDATE phoenix_tenant_bindings SET task_endpoint_id=$1 WHERE tenant_id=$2`, model.NewId(), tenantA)
+	require.NoError(t, err)
+	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.EnableCommands = false })
+	commandBlob, err := json.Marshal(model.CommandArgs{ChannelId: th.BasicChannel.Id, Command: "/task Fixture", TriggerId: "same-browser-request"})
+	require.NoError(t, err)
+	for range 2 {
+		request, err := http.NewRequest("POST", th.Client.URL+"/api/v4/commands/execute", bytes.NewReader(commandBlob))
+		require.NoError(t, err)
+		request.Header.Set("Authorization", "Bearer "+th.Client.AuthToken)
+		request.Header.Set("Content-Type", "application/json")
+		result, err := th.Client.HTTPClient.Do(request)
+		require.NoError(t, err)
+		result.Body.Close()
+		require.Equal(t, 200, result.StatusCode)
+	}
+	require.Len(t, taskKeys, 2)
+	require.Equal(t, <-taskKeys, <-taskKeys, "native trigger generation must not change the stable browser command key")
 	// Regression: the HTTP cap applies before the native parser deduplicates.
 	batch := make([]string, 201)
 	for i := range batch {
