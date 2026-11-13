@@ -5,10 +5,12 @@ import classNames from 'classnames';
 import React from 'react';
 import type {JSX, ReactNode} from 'react';
 import {FormattedMessage} from 'react-intl';
+import {useSelector} from 'react-redux';
 
 import type {UserProfile} from '@mattermost/types/users';
 
-import {isGuest} from 'mattermost-redux/utils/user_utils';
+import {getTeammateNameDisplaySetting} from 'mattermost-redux/selectors/entities/preferences';
+import {displayUsername, isGuest} from 'mattermost-redux/utils/user_utils';
 
 import usePrefixedIds, {joinIds} from 'components/common/hooks/usePrefixedIds';
 import CustomStatusEmoji from 'components/custom_status/custom_status_emoji';
@@ -44,6 +46,7 @@ function isGroup(o: unknown): o is Group {
 
 const AtMentionSuggestion = React.forwardRef<HTMLLIElement, SuggestionProps<Item>>((props, ref) => {
     const {id, item} = props;
+    const teammateNameDisplay = useSelector(getTeammateNameDisplaySetting);
 
     const ids = usePrefixedIds(id, {
         atMention: null,
@@ -57,7 +60,9 @@ const AtMentionSuggestion = React.forwardRef<HTMLLIElement, SuggestionProps<Item
         importedInactiveTag: null,
     });
 
+    // itemname is the handle that gets inserted and used for lookups; displayName is only what we show.
     let itemname: string;
+    let displayName: string | undefined;
     let description: ReactNode;
     let icon: JSX.Element;
     let customStatus: ReactNode;
@@ -124,13 +129,21 @@ const AtMentionSuggestion = React.forwardRef<HTMLLIElement, SuggestionProps<Item
         );
     } else {
         itemname = item.username;
+        displayName = displayUsername(item, teammateNameDisplay);
 
+        // The inserted mention stays @username, so keep the handle visible when the label differs.
+        const handle = displayName === item.username ? '' : `@${item.username}`;
+        let names = '';
         if (item.isCurrentUser) {
             if (item.first_name || item.last_name) {
-                description = <span>{Utils.getFullName(item)}</span>;
+                names = Utils.getFullName(item);
             }
         } else if (item.first_name || item.last_name || item.nickname) {
-            description = <span>{`${Utils.getFullName(item)} ${item.nickname ? `(${item.nickname})` : ''}`.trim()}</span>;
+            names = `${Utils.getFullName(item)} ${item.nickname ? `(${item.nickname})` : ''}`.trim();
+        }
+        const descriptionText = [handle, names].filter(Boolean).join(' ');
+        if (descriptionText) {
+            description = <span>{descriptionText}</span>;
         }
 
         icon = (
@@ -217,7 +230,7 @@ const AtMentionSuggestion = React.forwardRef<HTMLLIElement, SuggestionProps<Item
                     data-testid='suggestion-list__main'
                     className='suggestion-list__main'
                 >
-                    {'@' + itemname}
+                    {'@' + (displayName ?? itemname)}
                 </span>
                 {item.is_bot && <span id={ids.botTag}>{item.isAgent ? <AgentTag/> : <BotTag/>}</span>}
                 {description && <span id={ids.description}>{description}</span>}

@@ -67,6 +67,19 @@ describe('at mention suggestion', () => {
         expect(ellipsis?.textContent).toContain('a b (c)');
     });
 
+    test('should label the suggestion with the nickname when the teammate name display prefers nicknames', () => {
+        renderWithContext(
+            <AtMentionSuggestion
+                {...baseProps}
+                item={userid2}
+            />,
+            {entities: {general: {config: {TeammateNameDisplay: 'nickname_full_name'}}}},
+        );
+
+        expect(screen.getByTestId('suggestion-list__main')).toHaveTextContent('@c');
+        expect(screen.getByTestId('mentionSuggestion_user2')).toHaveTextContent('@user2 a b (c)');
+    });
+
     describe('accessible text', () => {
         const testCases = [
             {

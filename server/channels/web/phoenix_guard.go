@@ -76,7 +76,9 @@ func phoenixError(err error) *model.AppError {
 func phoenixRouteBlocked(r *http.Request) bool {
 	// Native bootstrap reads contain shared client settings and role definitions,
 	// not tenant resources. Preserve native validation and block every admin write.
-	if (r.Method == http.MethodGet && (r.URL.Path == "/api/v4/config/client" || r.URL.Path == "/api/v4/license/client")) ||
+	// GET /plugins/webapp is how the webapp discovers the bundles of enabled prepackaged plugins
+	// (Playbooks); it returns only client manifests. Every other plugin route stays blocked.
+	if (r.Method == http.MethodGet && (r.URL.Path == "/api/v4/config/client" || r.URL.Path == "/api/v4/license/client" || r.URL.Path == "/api/v4/plugins/webapp")) ||
 		(r.Method == http.MethodPost && r.URL.Path == "/api/v4/roles/names") {
 		return false
 	}
