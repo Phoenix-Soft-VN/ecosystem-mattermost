@@ -12,6 +12,9 @@ import (
 // native membership are checked together in one indexed query for this recipient.
 // No customer binding ever becomes an operator or an offline authority fallback.
 func (p *Policy) NotificationAllowed(ctx context.Context, userID string, channelIDs []string) bool {
+	if Enforced() && p.Authority == nil {
+		return false
+	}
 	if userID == "" || len(channelIDs) == 0 || len(channelIDs) > MaxBatchIDs {
 		return false
 	}

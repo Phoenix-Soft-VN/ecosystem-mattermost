@@ -179,6 +179,9 @@ func (p *Policy) ResolveActor(ctx context.Context, sessionID, userID string) (Ac
 			return ActorContext{}, c.err
 		}
 		if !c.actor.Operator {
+			if Enforced() && p.Authority == nil {
+				return ActorContext{}, ErrAuthorityUnavailable
+			}
 			if derr := p.driftError(c.actor.TenantID); derr != nil {
 				return ActorContext{}, derr
 			}
@@ -189,6 +192,11 @@ func (p *Policy) ResolveActor(ctx context.Context, sessionID, userID string) (Ac
 
 	actor, perr := p.load(ctx, sessionID, userID)
 	ttl := ActorCacheTTL
+	if perr == nil && !actor.Operator && p.Authority == nil && Enforced() {
+		// Missing startup credentials must close existing sessions as well as
+		// login/readiness. Nil authority is only a pure-policy developer fixture.
+		perr = ErrAuthorityUnavailable
+	}
 	if perr == nil && !actor.Operator && p.Authority != nil {
 		// Live Gateway authority: an outage after the cache window closes access (503); a revoked
 		// session or CHAT entitlement is refused with 401/403.
