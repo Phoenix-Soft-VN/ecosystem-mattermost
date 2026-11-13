@@ -108,6 +108,15 @@ func (p *Policy) AllowEvent(ctx context.Context, sessionID, userID string, ev Ev
 		if t, e := p.ChannelTenant(ctx, ev.ChannelID); !same(t, e) {
 			return false
 		}
+		// Membership is mutable: never reuse the tenant cache, queue-time fan-out,
+		// WebHub channel iteration or a connection's member cache for delivery.
+		var member bool
+		if err := p.db.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM channelmembers cm JOIN channels c ON c.id=cm.channelid
+			WHERE cm.channelid=$1 AND cm.userid=$2 AND c.deleteat=0
+		)`, ev.ChannelID, userID).Scan(&member); err != nil || !member {
+			return false
+		}
 	}
 	if ev.TeamID != "" {
 		if t, e := p.TeamTenant(ctx, ev.TeamID); !same(t, e) {

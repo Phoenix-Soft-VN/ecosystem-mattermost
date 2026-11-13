@@ -79,6 +79,30 @@ func TestPolicyBoundary(t *testing.T) {
 	if err := p.ParticipantsShareTenant(ctx, a1, []string{w.A2}); err != nil {
 		t.Fatalf("adding a same-tenant participant must pass: %v", err)
 	}
+	// R1-008: native admin roles do not admit pending/revoked same-tenant participants.
+	for _, role := range []string{"system_user", "system_user system_admin"} {
+		if _, err := f.db.Exec(`UPDATE users SET roles=$1 WHERE id=$2`, role, w.A1); err != nil {
+			t.Fatal(err)
+		}
+		for _, state := range []string{"PENDING", "REVOKED", "GRANTED"} {
+			if _, err := f.db.Exec(`UPDATE phoenix_user_bindings SET access_state=$1 WHERE native_user_id=$2`, state, w.A2); err != nil {
+				t.Fatal(err)
+			}
+			tenant, commonErr := p.CommonTenant(ctx, []string{w.A1, w.A2})
+			participantErr := p.ParticipantsShareTenant(ctx, a1, []string{w.A2})
+			if state == "GRANTED" {
+				if commonErr != nil || tenant != w.TenantA || participantErr != nil {
+					t.Fatalf("granted control role=%s: %s %v %v", role, tenant, commonErr, participantErr)
+				}
+			} else if !isNotFound(commonErr) || !isNotFound(participantErr) {
+				t.Fatalf("inactive DM peer admitted: %s %s %v %v", role, state, commonErr, participantErr)
+			}
+			// Historical profile visibility has a different purpose; retain it.
+			if err := p.CanAccessResource(ctx, a1, ResUser, w.A2); err != nil {
+				t.Fatalf("historical profile visibility changed: %v", err)
+			}
+		}
+	}
 	// An unbound account is neither a participant nor an operator.
 	if _, err := p.CommonTenant(ctx, []string{w.A1, w.Loner}); !isNotFound(err) {
 		t.Fatalf("unbound user must not be a participant: %v", err)
@@ -262,6 +286,12 @@ func TestWSBoundary(t *testing.T) {
 	w := newWorld(f)
 	p := w.policy()
 	ctx := context.Background()
+	for _, user := range []string{w.A1, w.A2} {
+		f.insert("channelmembers", map[string]any{"channelid": w.ChanA, "userid": user, "roles": "channel_user"})
+	}
+	if _, err := f.db.Exec(`UPDATE channels SET deleteat=0 WHERE id=$1`, w.ChanA); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
@@ -293,6 +323,22 @@ func TestWSBoundary(t *testing.T) {
 	// the same decision applies to a replayed (dead-queue) event, and a membership/access change
 	// takes effect immediately after invalidation
 	ev := EventInfo{Type: "posted", ChannelID: w.ChanA, Subjects: []string{w.A2}}
+	if _, err := f.db.Exec(`UPDATE channels SET type='P' WHERE id=$1`, w.ChanA); err != nil {
+		t.Fatal(err)
+	}
+	if !p.AllowEvent(ctx, w.SessA1, w.A1, ev) {
+		t.Fatal("private queued event must start allowed")
+	}
+	if _, err := f.db.Exec(`DELETE FROM channelmembers WHERE channelid=$1 AND userid=$2`, w.ChanA, w.A1); err != nil {
+		t.Fatal(err)
+	}
+	if p.AllowEvent(ctx, w.SessA1, w.A1, ev) {
+		t.Fatal("former member received queued private content without CHAT revocation")
+	}
+	if !p.AllowEvent(ctx, w.SessA2, w.A2, ev) {
+		t.Fatal("remaining private member lost positive control")
+	}
+	f.insert("channelmembers", map[string]any{"channelid": w.ChanA, "userid": w.A1, "roles": "channel_user"})
 	if !p.AllowEvent(ctx, w.SessA1, w.A1, ev) {
 		t.Fatal("precondition: event allowed before revoke")
 	}

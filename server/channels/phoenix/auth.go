@@ -194,6 +194,17 @@ func itoa(n int) string {
 // ---- GET /phoenix/auth/login ---------------------------------------------------------
 
 func (s *AuthService) Login(w http.ResponseWriter, r *http.Request) {
+	// The callback leaves OAuth parameters behind before displaying a browser error.
+	// This allowlisted code carries no identity and cannot authorize a native session.
+	if r.URL.Query().Get("error") == CodeProvisioningPending {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Phoenix Chat</title><style>body{font:1rem system-ui;margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#182338}main{max-width:32rem;margin:1.5rem;padding:2rem;background:white;border-radius:1rem}a{display:inline-block;margin-top:1rem;padding:.75rem 1.25rem;background:#245edb;color:white;border-radius:.5rem;text-decoration:none}</style></head><body><main><h1>Phoenix Chat</h1><p role="status">Tài khoản Chat đang được chuẩn bị. Vui lòng thử lại sau.</p><a href="/phoenix/auth/login">Thử lại</a></main></body></html>`)
+		return
+	}
 	if s.rateLimited(w, r) {
 		return
 	}
@@ -240,6 +251,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	invalid := newErr(http.StatusUnauthorized, CodeAuthInvalid, "invalid sign-in request")
 	q := r.URL.Query()
 	state, code := q.Get("state"), q.Get("code")
@@ -294,7 +306,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		s.audit("phoenix.auth.reject", map[string]string{"reason": "unbound"})
-		s.fail(w, newErr(http.StatusConflict, CodeProvisioningPending, "chat account is being prepared"))
+		http.Redirect(w, r, authPath+"/login?error="+CodeProvisioningPending, http.StatusSeeOther)
 		return
 	case err != nil:
 		s.fail(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "authentication unavailable"))
@@ -307,7 +319,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	switch ub.AccessState {
 	case AccessPending:
-		s.fail(w, newErr(http.StatusConflict, CodeProvisioningPending, "chat account is being prepared"))
+		http.Redirect(w, r, authPath+"/login?error="+CodeProvisioningPending, http.StatusSeeOther)
 		return
 	case AccessRevoked:
 		s.fail(w, ErrAccessDenied)

@@ -408,7 +408,7 @@ func (p *Policy) FilterUserIDs(ctx context.Context, actor ActorContext, ids []st
 }
 
 // ParticipantsShareTenant is the DM / group-DM rule: every participant must be a bound
-// principal of the actor's tenant (the actor included), or creation is refused.
+// active customer/bot principal of the actor's active tenant (the actor included).
 func (p *Policy) ParticipantsShareTenant(ctx context.Context, actor ActorContext, userIDs []string) error {
 	if actor.Operator {
 		return nil
@@ -421,11 +421,11 @@ func (p *Policy) ParticipantsShareTenant(ctx context.Context, actor ActorContext
 	for id := range uniq {
 		list = append(list, id)
 	}
-	allowed, err := p.FilterUserIDs(ctx, actor, list)
+	tenant, err := p.CommonTenant(ctx, list)
 	if err != nil {
 		return err
 	}
-	if len(allowed) != len(list) {
+	if tenant != actor.TenantID {
 		return ErrNotFound
 	}
 	return nil
@@ -492,6 +492,9 @@ func (p *Policy) UsersShareTenant(ctx context.Context, a, b string) (bool, error
 // CommonTenant returns the tenant shared by every listed user. If any user is unbound or the
 // users span tenants it returns ErrNotFound (the same shape as an unknown resource).
 func (p *Policy) CommonTenant(ctx context.Context, ids []string) (string, error) {
+	if len(ids) == 0 || len(ids) > MaxBatchIDs {
+		return "", ErrNotFound
+	}
 	uniq := map[string]bool{}
 	for _, id := range ids {
 		uniq[id] = true
@@ -500,7 +503,10 @@ func (p *Policy) CommonTenant(ctx context.Context, ids []string) (string, error)
 	for id := range uniq {
 		list = append(list, id)
 	}
-	rows, err := p.db.QueryContext(ctx, `SELECT tenant_id FROM phoenix_user_bindings WHERE native_user_id = ANY($1)`, pq.Array(list))
+	rows, err := p.db.QueryContext(ctx, `SELECT ub.tenant_id FROM phoenix_user_bindings ub
+		JOIN phoenix_tenant_bindings tb ON tb.tenant_id=ub.tenant_id
+		WHERE ub.native_user_id = ANY($1) AND ub.access_state='GRANTED'
+		AND ub.actor_kind IN ('CUSTOMER','BOT') AND tb.state='ACTIVE'`, pq.Array(list))
 	if err != nil {
 		return "", wrapErr(http.StatusServiceUnavailable, CodeNotReady, "policy store unavailable", err)
 	}

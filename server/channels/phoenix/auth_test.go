@@ -143,8 +143,13 @@ func TestOIDCAbuse(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: authBindCookie, Value: "pending-browser"})
 	pending := httptest.NewRecorder()
 	service.Callback(pending, req)
-	if pending.Code != 409 || !strings.Contains(pending.Body.String(), "CHAT_PROVISIONING_PENDING") {
+	if pending.Code != 303 || pending.Header().Get("Location") != "/phoenix/auth/login?error=CHAT_PROVISIONING_PENDING" {
 		t.Fatalf("pending callback status=%d body=%s", pending.Code, pending.Body)
+	}
+	presentation := httptest.NewRecorder()
+	service.Login(presentation, httptest.NewRequest("GET", "https://chat.mm-replace.test"+pending.Header().Get("Location"), nil))
+	if presentation.Code != 409 || !strings.Contains(presentation.Body.String(), "Tài khoản Chat đang được chuẩn bị. Vui lòng thử lại sau.") || !strings.Contains(presentation.Body.String(), `href="/phoenix/auth/login"`) {
+		t.Fatal("pending browser must have Vietnamese copy and a fresh login retry")
 	}
 	for _, cookie := range pending.Result().Cookies() {
 		if cookie.Name == "MMAUTHTOKEN" && cookie.Value != "" {

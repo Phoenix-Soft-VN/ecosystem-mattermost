@@ -437,6 +437,7 @@ func (s *Service) ReadEvidence(ctx context.Context, req EvidenceRequest) (Operat
 // evidence builds the sanitized read-back directly from native resources and bindings.
 func (s *Service) evidence(ctx context.Context, tb TenantBinding, ub *UserBinding) (OperationEvidence, error) {
 	ev := s.base()
+	ev.DesiredVersion = tb.DesiredVersion
 	team, err := s.native.ReadTeam(ctx, tb.TeamID)
 	if err != nil {
 		return ev, err
@@ -446,6 +447,13 @@ func (s *Service) evidence(ctx context.Context, tb TenantBinding, ub *UserBindin
 	}
 	ev.TenantState, ev.TeamID, ev.TeamType, ev.DefaultChannelID, ev.PolicyVersion = tb.State, tb.TeamID, team.Type, tb.DefaultChannelID, tb.PolicyVersion
 	ev.TeamName = team.Name
+	channelID, err := s.native.DefaultChannelID(ctx, tb.TeamID)
+	if err != nil {
+		return ev, err
+	}
+	if channelID == "" || channelID != tb.DefaultChannelID {
+		return ev, newErr(http.StatusConflict, CodeOperationConflict, "bound default channel missing or changed in native store")
+	}
 	if ub != nil {
 		member, merr := s.native.IsTeamMember(ctx, tb.TeamID, ub.NativeUserID)
 		if merr != nil {

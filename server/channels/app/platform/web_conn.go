@@ -590,7 +590,7 @@ func (wc *WebConn) writePump() {
 
 			// Revalidate at write time: the event may have waited in the send buffer while
 			// membership, access or tenant state changed.
-			if evtOk && !wc.phoenixAllowsEvent(evt) {
+			if evtOk && phoenix.Default() != nil && !wc.ShouldSendEvent(evt) {
 				continue
 			}
 
@@ -671,7 +671,7 @@ func (wc *WebConn) writeMessageBuf(msgType int, data []byte) error {
 
 func (wc *WebConn) writeMessage(msg *model.WebSocketEvent) error {
 	// Replayed (dead queue) events are revalidated like live ones.
-	if !wc.phoenixAllowsEvent(msg) {
+	if phoenix.Default() != nil && !wc.ShouldSendEvent(msg) {
 		return nil
 	}
 	// We don't use the encoder from the write pump because it's unwieldy to pass encoders
