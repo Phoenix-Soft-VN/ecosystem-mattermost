@@ -35,7 +35,11 @@ func (api *API) InitPhoenix() {
 		for k, v := range fields {
 			attrs = append(attrs, mlog.String(k, v))
 		}
-		srv.Log().Warn(event, attrs...)
+		if event == "phoenix.authority.metrics" {
+			srv.Log().Info(event, attrs...)
+		} else {
+			srv.Log().Warn(event, attrs...)
+		}
 	}
 
 	settings := phoenix.LoadSettings()
@@ -79,6 +83,7 @@ func (api *API) InitPhoenix() {
 			}
 			signer := &phoenix.BridgeSigner{Issuer: settings.BridgeIssuer, Secret: []byte(strings.TrimSpace(string(bridgeRaw)))}
 			authority := phoenix.NewAuthority(&phoenix.AuthorityClient{URL: settings.GatewayURL, Signer: signer, Issuer: settings.OIDCIssuer, HTTP: httpc})
+			authority.Audit = audit
 			authority.OnInactive = func(ctx context.Context, sessionID string) { _ = native.RevokeSession(ctx, sessionID) }
 			policy.Authority = authority
 			authLimiter := phoenix.NewLimiter(phoenix.AuthRatePerMin, time.Minute, nil)

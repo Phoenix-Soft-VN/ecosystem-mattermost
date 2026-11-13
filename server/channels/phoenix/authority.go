@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,13 +162,71 @@ type authorityEntry struct {
 // never reads another's entry. Age uses the monotonic clock, so wall-clock jumps cannot extend a grant.
 type Authority struct {
 	Client *AuthorityClient
+	// Audit receives bounded, aggregate numeric telemetry only. No actor identity
+	// or assertion is retained in these process-wide operational measurements.
+	Audit func(event string, fields map[string]string)
 	// OnInactive is called when the Gateway says the Gateway session is gone (revoked logout).
 	OnInactive func(ctx context.Context, sessionID string)
 	MaxAge     time.Duration
 
-	mu      sync.Mutex
-	entries map[string]authorityEntry
-	locks   keyedMutex
+	mu        sync.Mutex
+	entries   map[string]authorityEntry
+	locks     keyedMutex
+	metricsMu sync.Mutex
+	metrics   authorityMetrics
+}
+
+type authorityMetrics struct {
+	last                                                 time.Time
+	checks, refreshes, hits, failures, unavailable       int64
+	durationMicros, maxDurationMicros, maxCacheAgeMillis int64
+}
+
+func (a *Authority) observe(start time.Time, cached bool, age time.Duration, result error) {
+	if a.Audit == nil {
+		return
+	}
+	now := time.Now()
+	a.metricsMu.Lock()
+	m := &a.metrics
+	m.checks++
+	if cached {
+		m.hits++
+	} else {
+		m.refreshes++
+	}
+	if result != nil {
+		m.failures++
+		var pe *Error
+		if errors.As(result, &pe) && pe.Code == CodeAuthorityDown {
+			m.unavailable++
+		}
+	}
+	elapsed := now.Sub(start).Microseconds()
+	m.durationMicros += elapsed
+	if elapsed > m.maxDurationMicros {
+		m.maxDurationMicros = elapsed
+	}
+	if age.Milliseconds() > m.maxCacheAgeMillis {
+		m.maxCacheAgeMillis = age.Milliseconds()
+	}
+	if !m.last.IsZero() && now.Sub(m.last) < 5*time.Second {
+		a.metricsMu.Unlock()
+		return
+	}
+	m.last = now
+	fields := map[string]string{
+		"checks_total":                strconv.FormatInt(m.checks, 10),
+		"refreshes_total":             strconv.FormatInt(m.refreshes, 10),
+		"cache_hits_total":            strconv.FormatInt(m.hits, 10),
+		"failures_total":              strconv.FormatInt(m.failures, 10),
+		"unavailable_total":           strconv.FormatInt(m.unavailable, 10),
+		"duration_microseconds_total": strconv.FormatInt(m.durationMicros, 10),
+		"max_duration_microseconds":   strconv.FormatInt(m.maxDurationMicros, 10),
+		"max_cache_age_milliseconds":  strconv.FormatInt(m.maxCacheAgeMillis, 10),
+	}
+	a.metricsMu.Unlock()
+	a.Audit("phoenix.authority.metrics", fields)
 }
 
 func NewAuthority(c *AuthorityClient) *Authority {
@@ -205,7 +264,10 @@ func (a *Authority) Invalidate(sessionID string) {
 }
 
 // Check validates a bound session against the Gateway, using the cache while it is fresh.
-func (a *Authority) Check(ctx context.Context, actor ActorContext) error {
+func (a *Authority) Check(ctx context.Context, actor ActorContext) (result error) {
+	started := time.Now()
+	cached, age := false, time.Duration(0)
+	defer func() { a.observe(started, cached, age, result) }()
 	unlock := a.locks.Lock(actor.SessionID)
 	defer unlock()
 
@@ -213,6 +275,7 @@ func (a *Authority) Check(ctx context.Context, actor ActorContext) error {
 	e, ok := a.entries[actor.SessionID]
 	a.mu.Unlock()
 	if ok && e.tenantID == actor.TenantID && e.version == actor.AccessVersion && a.freshFor(e) > 0 {
+		cached, age = true, time.Since(e.fetched)
 		return decisionError(e)
 	}
 
