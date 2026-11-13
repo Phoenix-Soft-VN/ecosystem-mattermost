@@ -536,8 +536,22 @@ func (wc *WebConn) writePump() {
 	if wc.Sequence != 0 {
 		if ok, index := wc.isInDeadQueue(wc.Sequence); ok {
 			if err := wc.drainDeadQueue(index); err != nil {
-				wc.logSocketErr("websocket.drainDeadQueue", err)
-				return
+				if !errors.Is(err, errPhoenixReplayChanged) {
+					wc.logSocketErr("websocket.drainDeadQueue", err)
+					return
+				}
+				// A filtered numbered event would leave a gap and make the native client
+				// reconnect forever. Use native loss-recovery semantics: new stream/hello
+				// makes the client resync its currently authorized resources via HTTP.
+				wc.clearDeadQueue()
+				wc.SetConnectionID(model.NewId())
+				wc.Sequence = 0
+				hello := wc.createHelloMessage()
+				wc.addToDeadQueue(hello)
+				if err := wc.writeMessage(hello); err != nil {
+					wc.logSocketErr("websocket.phoenixReplayReset", err)
+					return
+				}
 			}
 			if m := wc.Platform.metricsIFace; m != nil {
 				m.IncrementWebsocketReconnectEventWithDisconnectErrCode(reconnectFound, wc.DisconnectErrCode)
@@ -669,10 +683,12 @@ func (wc *WebConn) writeMessageBuf(msgType int, data []byte) error {
 	return wc.WebSocket.WriteMessage(msgType, data)
 }
 
+var errPhoenixReplayChanged = errors.New("Phoenix replay authorization changed")
+
 func (wc *WebConn) writeMessage(msg *model.WebSocketEvent) error {
 	// Replayed (dead queue) events are revalidated like live ones.
 	if phoenix.Default() != nil && !wc.ShouldSendEvent(msg) {
-		return nil
+		return errPhoenixReplayChanged
 	}
 	// We don't use the encoder from the write pump because it's unwieldy to pass encoders
 	// around, and this is only called during initialization of the webConn.
@@ -763,6 +779,15 @@ func (wc *WebConn) clearDeadQueue() {
 // It is called with the assumption that the item with wc.Sequence is present
 // in it, because otherwise it would have been cleared from WebConn.
 func (wc *WebConn) drainDeadQueue(index int) error {
+	if phoenix.Default() != nil {
+		// Check before writing any replay frames. The write boundary checks again
+		// in case authorization changes while this bounded queue is being drained.
+		for _, msg := range wc.deadQueue {
+			if msg != nil && msg.GetSequence() >= wc.Sequence && !wc.ShouldSendEvent(msg) {
+				return errPhoenixReplayChanged
+			}
+		}
+	}
 	if wc.deadQueue[0] == nil {
 		// Empty queue
 		return nil

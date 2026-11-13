@@ -15,7 +15,7 @@ import (
 // R1-001 mutation: remove the delivery/replay guard or replace fresh membership with queue-time state.
 // Both paths write real WebSocket frames, backed by native PostgreSQL and its member store.
 func TestPhoenixQueuedPrivateMembership(t *testing.T) {
-	for _, boundary := range []string{"write", "replay"} {
+	for _, boundary := range []string{"write", "replay-allowed", "replay-removed"} {
 		t.Run(boundary, func(t *testing.T) {
 			th := Setup(t).InitBasic(t)
 			db := th.Store.GetInternalMasterDB()
@@ -54,30 +54,43 @@ func TestPhoenixQueuedPrivateMembership(t *testing.T) {
 			defer server.Close()
 			wc := th.Service.NewWebConn(&WebConnConfig{WebSocket: server, Session: *session, ConnectionID: model.NewId()}, th.Suite, &hookRunner{})
 			denied := model.NewWebSocketEvent(model.WebsocketEventPosted, "", blocked.Id, "", nil, "")
-			denied.Add("marker", "must-not-deliver")
+			denied.Add("marker", "queued-private")
 			positive := model.NewWebSocketEvent(model.WebsocketEventPosted, "", allowed.Id, "", nil, "")
 			positive.Add("marker", "allowed-member")
 			require.True(t, wc.ShouldSendEvent(denied))
 			require.True(t, wc.ShouldSendEvent(positive))
-			if boundary == "replay" {
-				wc.addToDeadQueue(denied)
-				wc.addToDeadQueue(positive)
+			oldConnectionID := wc.GetConnectionID()
+			if boundary != "write" {
+				wc.Sequence = 1
+				wc.addToDeadQueue(denied.SetSequence(1))
+				wc.addToDeadQueue(positive.SetSequence(2))
 			} else {
 				wc.send <- denied
 				wc.send <- positive
 			}
-			require.NoError(t, th.Store.Channel().RemoveMember(th.Context, blocked.Id, user.Id))
-			// Do not invalidate the connection cache: this is precisely the stale queue scenario.
-			done := make(chan struct{})
-			if boundary == "replay" {
-				require.NoError(t, wc.drainDeadQueue(0))
-			} else {
-				go func() { wc.writePump(); close(done) }()
-				defer func() { close(wc.endWritePump); <-done }()
+			if boundary != "replay-allowed" {
+				require.NoError(t, th.Store.Channel().RemoveMember(th.Context, blocked.Id, user.Id))
 			}
+			// Leave the old membership cache populated: authorization must be fresh.
+			done := make(chan struct{})
+			go func() { wc.writePump(); close(done) }()
+			defer func() { close(wc.endWritePump); <-done }()
 			require.NoError(t, client.SetReadDeadline(time.Now().Add(3*time.Second)))
 			var frame map[string]any
 			require.NoError(t, client.ReadJSON(&frame))
+			if boundary == "replay-removed" {
+				require.Equal(t, "hello", frame["event"], "filtered replay must reset the native stream, never serialize the removed private event")
+				require.Equal(t, float64(0), frame["seq"])
+				require.NotEqual(t, oldConnectionID, frame["data"].(map[string]any)["connection_id"])
+				wc.send <- positive
+				require.NoError(t, client.ReadJSON(&frame))
+				require.Equal(t, float64(1), frame["seq"], "new authorized traffic must have the next native sequence")
+			} else if boundary == "replay-allowed" {
+				require.Equal(t, "queued-private", frame["data"].(map[string]any)["marker"], "member's queued private event must replay")
+				require.Equal(t, float64(1), frame["seq"])
+				require.NoError(t, client.ReadJSON(&frame))
+				require.Equal(t, float64(2), frame["seq"])
+			}
 			require.Equal(t, "allowed-member", frame["data"].(map[string]any)["marker"], "removed channel's queued payload reached the wire")
 			require.NoError(t, client.SetReadDeadline(time.Now().Add(150*time.Millisecond)))
 			_, _, err = client.ReadMessage()
