@@ -121,6 +121,16 @@
         }
     }
 
+    &__header button {
+        // Browser ButtonFace stays light in dark mode. Paint these controls
+        // with the authoritative shell surface instead of the UA palette.
+        background: transparent;
+        border: 1px solid var(--phoenix-color-border, #d9dce1);
+        border-radius: 4px;
+        font: inherit;
+        cursor: pointer;
+    }
+
     @media (max-width: 640px) {
         &__header {
             flex-wrap: wrap;
