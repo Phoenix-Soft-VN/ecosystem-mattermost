@@ -156,6 +156,14 @@ func TestOIDCAbuse(t *testing.T) {
 			t.Fatal("pending created a native cookie")
 		}
 	}
+	// The safe presentation is still an auth endpoint and retains the C3 IP budget.
+	service.Limiter = NewLimiter(1, time.Minute, nil)
+	firstView, limitedView := httptest.NewRecorder(), httptest.NewRecorder()
+	service.Login(firstView, httptest.NewRequest("GET", "https://chat.mm-replace.test"+pending.Header().Get("Location"), nil))
+	service.Login(limitedView, httptest.NewRequest("GET", "https://chat.mm-replace.test"+pending.Header().Get("Location"), nil))
+	if firstView.Code != 409 || limitedView.Code != 429 || limitedView.Header().Get("Retry-After") == "" {
+		t.Fatal("pending presentation must retain the auth IP rate limit")
+	}
 }
 
 // Break: caching past 30s, sharing authority across tenant/version, or serving after outage.
