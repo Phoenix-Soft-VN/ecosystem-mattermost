@@ -99,6 +99,10 @@ type WebConn struct {
 	PostedAck         bool
 	DisconnectErrCode string
 
+	// eventMu owns native authorization cache/slow-admission state across the hub,
+	// writer/replay and cache invalidation. Hold it through refresh and read-back,
+	// so an older refresh cannot overwrite an invalidation that has completed.
+	eventMu                   sync.Mutex
 	allChannelMembers         map[string]string
 	lastAllChannelMembersTime int64
 	lastUserActivityAt        int64
@@ -604,7 +608,7 @@ func (wc *WebConn) writePump() {
 
 			// Revalidate at write time: the event may have waited in the send buffer while
 			// membership, access or tenant state changed.
-			if evtOk && phoenix.Default() != nil && !wc.ShouldSendEvent(evt) {
+			if evtOk && phoenix.Default() != nil && !wc.shouldDeliverEvent(evt) {
 				continue
 			}
 
@@ -687,7 +691,7 @@ var errPhoenixReplayChanged = errors.New("Phoenix replay authorization changed")
 
 func (wc *WebConn) writeMessage(msg *model.WebSocketEvent) error {
 	// Replayed (dead queue) events are revalidated like live ones.
-	if phoenix.Default() != nil && !wc.ShouldSendEvent(msg) {
+	if phoenix.Default() != nil && !wc.shouldDeliverEvent(msg) {
 		return errPhoenixReplayChanged
 	}
 	// We don't use the encoder from the write pump because it's unwieldy to pass encoders
@@ -783,7 +787,7 @@ func (wc *WebConn) drainDeadQueue(index int) error {
 		// Check before writing any replay frames. The write boundary checks again
 		// in case authorization changes while this bounded queue is being drained.
 		for _, msg := range wc.deadQueue {
-			if msg != nil && msg.GetSequence() >= wc.Sequence && !wc.ShouldSendEvent(msg) {
+			if msg != nil && msg.GetSequence() >= wc.Sequence && !wc.shouldDeliverEvent(msg) {
 				return errPhoenixReplayChanged
 			}
 		}
@@ -823,6 +827,8 @@ func (wc *WebConn) drainDeadQueue(index int) error {
 
 // InvalidateCache resets all internal data of the WebConn.
 func (wc *WebConn) InvalidateCache() {
+	wc.eventMu.Lock()
+	defer wc.eventMu.Unlock()
 	wc.allChannelMembers = nil
 	wc.lastAllChannelMembersTime = 0
 	wc.SetSession(nil)
@@ -861,6 +867,9 @@ func (wc *WebConn) IsBasicAuthenticated() bool {
 // IsMFAAuthenticated returns whether the user has completed MFA when required.
 func (wc *WebConn) IsMFAAuthenticated() bool {
 	session := wc.GetSession()
+	if session == nil {
+		return false
+	}
 	c := request.EmptyContext(wc.Platform.logger).WithSession(session)
 
 	// Check if MFA is required and user has NOT completed MFA
@@ -932,8 +941,27 @@ func (wc *WebConn) ShouldSendEventToGuest(msg *model.WebSocketEvent) bool {
 	return canSee
 }
 
-// ShouldSendEvent returns whether the message should be sent or not.
+// ShouldSendEvent is hub admission: authorize and optionally shed noncritical
+// events before enqueue. Its mutable state shares ownership with invalidation.
 func (wc *WebConn) ShouldSendEvent(msg *model.WebSocketEvent) bool {
+	wc.eventMu.Lock()
+	defer wc.eventMu.Unlock()
+	return wc.authorizeEvent(msg, true)
+}
+
+// shouldDeliverEvent retains every native/Phoenix authorization restriction, but
+// does not perform queue admission or mutate slow-queue logging state. A queued
+// or numbered replay event must not be discarded merely because the queue is slow.
+func (wc *WebConn) shouldDeliverEvent(msg *model.WebSocketEvent) bool {
+	wc.eventMu.Lock()
+	defer wc.eventMu.Unlock()
+	return wc.authorizeEvent(msg, false)
+}
+
+// authorizeEvent requires eventMu. Session snapshots are immutable (SetSession
+// deep-copies and publishes atomically); guard against concurrent authentication
+// failure clearing the atomic pointer outside this cache-ownership boundary.
+func (wc *WebConn) authorizeEvent(msg *model.WebSocketEvent, queueAdmission bool) bool {
 	// IMPORTANT: Do not send event if WebConn does not have a session and completed MFA
 	if !wc.IsAuthenticated() {
 		return false
@@ -947,7 +975,7 @@ func (wc *WebConn) ShouldSendEvent(msg *model.WebSocketEvent) bool {
 	// When the pump starts to get slow we'll drop non-critical
 	// messages. We should skip those frames before they are
 	// queued to wc.send buffered channel.
-	if len(wc.send) >= sendSlowWarn {
+	if queueAdmission && len(wc.send) >= sendSlowWarn {
 		switch msg.EventType() {
 		case model.WebsocketEventTyping,
 			model.WebsocketEventStatusChange,
@@ -976,7 +1004,11 @@ func (wc *WebConn) ShouldSendEvent(msg *model.WebSocketEvent) bool {
 	// If the event contains sanitized data, only send to users that don't have permission to
 	// see sensitive data. Prevents admin clients from receiving events with bad data
 	var hasReadPrivateDataPermission *bool
-	sessionRoles := wc.GetSession().GetUserRoles()
+	session := wc.GetSession()
+	if session == nil {
+		return false
+	}
+	sessionRoles := session.GetUserRoles()
 	sessionHasPermission := func(permissionId string) bool {
 		if permissionId == model.PermissionManageSystem.Id {
 			// Cache the manage_system lookup because multiple broadcast filters can require it.
@@ -1083,7 +1115,7 @@ func (wc *WebConn) ShouldSendEvent(msg *model.WebSocketEvent) bool {
 		return wc.isMemberOfTeam(msg.GetBroadcast().TeamId)
 	}
 
-	if wc.GetSession().Props[model.SessionPropIsGuest] == "true" {
+	if session.Props[model.SessionPropIsGuest] == "true" {
 		return wc.ShouldSendEventToGuest(msg)
 	}
 
