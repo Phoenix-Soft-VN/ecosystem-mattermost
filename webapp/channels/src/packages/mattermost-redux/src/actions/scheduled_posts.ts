@@ -9,11 +9,12 @@ import {forceLogoutIfNecessary} from 'mattermost-redux/actions/helpers';
 import {Client4} from 'mattermost-redux/client';
 import {getScheduledPostTeamId} from 'mattermost-redux/selectors/entities/scheduled_posts';
 import type {DispatchFunc, GetStateFunc} from 'mattermost-redux/types/actions';
+import {resolveDisplayMentions} from 'mattermost-redux/utils/mention_display';
 
 export function createSchedulePost(schedulePost: ScheduledPost, teamId: string, connectionId: string) {
-    return async (dispatch: DispatchFunc) => {
+    return async (dispatch: DispatchFunc, getState: GetStateFunc) => {
         try {
-            const createdPost = await Client4.createScheduledPost(schedulePost, connectionId);
+            const createdPost = await Client4.createScheduledPost({...schedulePost, message: resolveDisplayMentions(schedulePost.message, getState())}, connectionId);
 
             dispatch({
                 type: ScheduledPostTypes.SINGLE_SCHEDULED_POST_RECEIVED,
@@ -58,7 +59,7 @@ export function fetchTeamScheduledPosts(teamId: string, includeDirectChannels: b
 export function updateScheduledPost(scheduledPost: ScheduledPost, connectionId: string) {
     return async (dispatch: DispatchFunc, getState: GetStateFunc) => {
         try {
-            const updatedScheduledPost = await Client4.updateScheduledPost(scheduledPost, connectionId);
+            const updatedScheduledPost = await Client4.updateScheduledPost({...scheduledPost, message: resolveDisplayMentions(scheduledPost.message, getState())}, connectionId);
             const teamId = getScheduledPostTeamId(getState(), updatedScheduledPost.data);
 
             dispatch({

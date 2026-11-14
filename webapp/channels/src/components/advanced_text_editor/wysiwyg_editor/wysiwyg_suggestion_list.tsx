@@ -15,6 +15,7 @@ import {getDefaultAgent} from 'mattermost-redux/selectors/entities/agents';
 import {getConfig, getLicense} from 'mattermost-redux/selectors/entities/general';
 import {getAssociatedGroupsForReference} from 'mattermost-redux/selectors/entities/groups';
 import {makeGetProfilesForThread} from 'mattermost-redux/selectors/entities/posts';
+import {getTeammateNameDisplaySetting} from 'mattermost-redux/selectors/entities/preferences';
 import {haveIChannelPermission} from 'mattermost-redux/selectors/entities/roles';
 import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
@@ -99,6 +100,7 @@ const WysiwygSuggestionList = ({editor, channelId, rootId, onSubmit}: Props) => 
     const license = useSelector(getLicense);
     const config = useSelector(getConfig);
     const defaultAgent = useSelector(getDefaultAgent);
+    const teammateNameDisplay = useSelector(getTeammateNameDisplaySetting);
 
     const useGroupMentions = license?.IsLicensed === 'true' && license?.LDAPGroups === 'true';
     const autocompleteGroups = useSelector((state: GlobalState) => {
@@ -130,6 +132,7 @@ const WysiwygSuggestionList = ({editor, channelId, rootId, onSubmit}: Props) => 
                 searchAssociatedGroupsForReference: (prefix: string) => dispatch(searchAssociatedGroupsForReference(prefix, currentTeamId, channelId)) as Promise<ActionResult<Group[]>>,
                 priorityProfiles,
                 defaultAgent,
+                teammateNameDisplay,
             }),
             new ChannelMentionProvider(
                 (term: string, success: (channels: Channel[]) => void, error: (err: ServerError) => void) => dispatch(autocompleteChannels(term, success, error)),
@@ -137,7 +140,7 @@ const WysiwygSuggestionList = ({editor, channelId, rootId, onSubmit}: Props) => 
             ),
             new EmoticonProvider(),
         ];
-    }, [dispatch, currentUserId, channelId, rootId, currentTeamId, autocompleteGroups, priorityProfiles, defaultAgent, delayChannelAutocomplete]);
+    }, [dispatch, currentUserId, channelId, rootId, currentTeamId, autocompleteGroups, priorityProfiles, defaultAgent, teammateNameDisplay, delayChannelAutocomplete]);
 
     const handleReceivedSuggestions = useCallback((suggestions: ProviderResults) => {
         const normalized = normalizeResultsFromProvider(suggestions);

@@ -10,7 +10,7 @@ import type {Post, PostList} from '@mattermost/types/posts';
 import type {GlobalState} from '@mattermost/types/store';
 import type {IDMappedObjects} from '@mattermost/types/utilities';
 
-import {PostTypes, UserTypes} from 'mattermost-redux/action_types';
+import {GeneralTypes, PostTypes, UserTypes} from 'mattermost-redux/action_types';
 import {getChannelStats} from 'mattermost-redux/actions/channels';
 import {createCustomEmoji} from 'mattermost-redux/actions/emojis';
 import * as Actions from 'mattermost-redux/actions/posts';
@@ -179,6 +179,51 @@ describe('Actions.Posts', () => {
         expect(postIdForFiles).toBeTruthy();
 
         expect(postIdForFiles.length).toBe(files.length);
+    });
+
+    describe('nickname mentions', () => {
+        const nickUser = {id: 'nickuserid', username: 'unick1234', nickname: 'Nick Name', first_name: '', last_name: ''};
+
+        beforeEach(() => {
+            store.dispatch({type: UserTypes.RECEIVED_PROFILES_LIST, data: [nickUser]});
+            store.dispatch({type: GeneralTypes.CLIENT_CONFIG_RECEIVED, data: {TeammateNameDisplay: 'nickname_full_name'}});
+        });
+
+        it('createPost sends @username for an @nickname typed into the text box', async () => {
+            const channelId = TestHelper.basicChannel!.id;
+            const post = {...TestHelper.fakePost(channelId), message: 'hi @Nick Name, and `@Nick Name` stays'};
+
+            // createPost shows the pending post right away and sends it afterwards, so wait for the request.
+            const sent = new Promise<Post>((resolve) => {
+                nock(Client4.getBaseRoute()).
+                    post('/posts', (body) => {
+                        resolve(body);
+                        return true;
+                    }).
+                    reply(201, {...post, id: TestHelper.generateId()});
+            });
+
+            await store.dispatch(Actions.createPost(post));
+
+            expect((await sent).message).toBe('hi @unick1234, and `@Nick Name` stays');
+        });
+
+        it('editPost sends @username for an @nickname typed into the text box', async () => {
+            const channelId = TestHelper.basicChannel!.id;
+            const post = {...TestHelper.fakePostWithId(channelId), message: 'edited for @Nick Name'};
+
+            let sent: Post | undefined;
+            nock(Client4.getBaseRoute()).
+                put(`/posts/${post.id}/patch`, (body) => {
+                    sent = body;
+                    return true;
+                }).
+                reply(200, post);
+
+            await store.dispatch(Actions.editPost(post));
+
+            expect(sent?.message).toBe('edited for @unick1234');
+        });
     });
 
     it('editPost', async () => {

@@ -13,6 +13,7 @@ import type {Filters} from 'mattermost-redux/selectors/entities/users';
 import {makeGetProfilesInChannel} from 'mattermost-redux/selectors/entities/users';
 import {makeAddLastViewAtToProfiles} from 'mattermost-redux/selectors/entities/utils';
 import type {ActionResult} from 'mattermost-redux/types/actions';
+import {mentionDisplayName, rememberPickedMention} from 'mattermost-redux/utils/mention_display';
 import {getSuggestionsSplitBy, getSuggestionsSplitByMultiple} from 'mattermost-redux/utils/user_utils';
 
 import store from 'stores/redux_store';
@@ -52,6 +53,7 @@ export type Props = {
     searchAssociatedGroupsForReference: (prefix: string) => Promise<ActionResult<Group[]>>;
     priorityProfiles: UserProfile[] | undefined;
     defaultAgent?: Agent;
+    teammateNameDisplay?: string;
 };
 
 // Data structure returned by autocomplete API
@@ -74,6 +76,10 @@ export default class AtMentionProvider extends Provider {
     public searchAssociatedGroupsForReference: (prefix: string) => Promise<ActionResult<Group[]>>;
     public priorityProfiles: UserProfile[] | undefined;
     public defaultAgent?: Agent;
+    public teammateNameDisplay: string;
+
+    // term inserted for a suggestion (lower-cased) -> username it stands for
+    private termToUsername = new Map<string, string>();
 
     public data: AutocompleteData | null;
     public lastCompletedWord: string;
@@ -85,7 +91,7 @@ export default class AtMentionProvider extends Provider {
     constructor(props: Props) {
         super();
 
-        const {currentUserId, channelId, autocompleteUsersInChannel, useChannelMentions, autocompleteGroups, searchAssociatedGroupsForReference, priorityProfiles, defaultAgent} = props;
+        const {currentUserId, channelId, autocompleteUsersInChannel, useChannelMentions, autocompleteGroups, searchAssociatedGroupsForReference, priorityProfiles, defaultAgent, teammateNameDisplay} = props;
 
         this.currentUserId = currentUserId;
         this.channelId = channelId;
@@ -95,6 +101,7 @@ export default class AtMentionProvider extends Provider {
         this.searchAssociatedGroupsForReference = searchAssociatedGroupsForReference;
         this.priorityProfiles = priorityProfiles;
         this.defaultAgent = defaultAgent;
+        this.teammateNameDisplay = teammateNameDisplay ?? '';
 
         this.data = null;
         this.lastCompletedWord = '';
@@ -104,7 +111,7 @@ export default class AtMentionProvider extends Provider {
         this.addLastViewAtToProfiles = makeAddLastViewAtToProfiles();
     }
 
-    setProps({currentUserId, channelId, autocompleteUsersInChannel, useChannelMentions, autocompleteGroups, searchAssociatedGroupsForReference, priorityProfiles, defaultAgent}: Props) {
+    setProps({currentUserId, channelId, autocompleteUsersInChannel, useChannelMentions, autocompleteGroups, searchAssociatedGroupsForReference, priorityProfiles, defaultAgent, teammateNameDisplay}: Props) {
         this.currentUserId = currentUserId;
         this.channelId = channelId;
         this.autocompleteUsersInChannel = autocompleteUsersInChannel;
@@ -113,6 +120,7 @@ export default class AtMentionProvider extends Provider {
         this.searchAssociatedGroupsForReference = searchAssociatedGroupsForReference;
         this.priorityProfiles = priorityProfiles;
         this.defaultAgent = defaultAgent;
+        this.teammateNameDisplay = teammateNameDisplay ?? '';
     }
 
     // specialMentions matches one of @here, @channel or @all, unless using /msg.
@@ -378,16 +386,25 @@ export default class AtMentionProvider extends Provider {
 
         const items = [];
 
+        const defaultAgentProfile = this.defaultAgent ? this.findAgentUser(this.defaultAgent) : undefined;
+        const termFor = this.createTermFor([
+            ...filteredPriorityProfiles,
+            ...filteredLocalAndRemoteMembers,
+            ...agents,
+            ...remoteNonMembers,
+            ...(defaultAgentProfile ? [this.createFromProfile(defaultAgentProfile)] : []),
+        ]);
+
         const shouldShowDefaultAgentAtTop = this.latestPrefix === '';
         if (shouldShowDefaultAgentAtTop && this.defaultAgent) {
             const defaultAgentUser = this.findAgentUser(this.defaultAgent);
             if (defaultAgentUser) {
-                items.push(defaultAgentGroup({...this.createFromProfile(defaultAgentUser), isAgent: true, isDefaultAgent: true}));
+                items.push(defaultAgentGroup({...this.createFromProfile(defaultAgentUser), isAgent: true, isDefaultAgent: true}, termFor));
             }
         }
 
         if (filteredPriorityProfiles.length > 0 || filteredLocalAndRemoteMembers.length > 0) {
-            items.push(membersGroup([...filteredPriorityProfiles, ...filteredLocalAndRemoteMembers]));
+            items.push(membersGroup([...filteredPriorityProfiles, ...filteredLocalAndRemoteMembers], termFor));
         }
 
         // Filter out default agent from agents group when shown at top to avoid duplicate entries
@@ -397,7 +414,7 @@ export default class AtMentionProvider extends Provider {
         }
 
         if (agentsToShow.length > 0) {
-            items.push(agentsGroup(agentsToShow));
+            items.push(agentsGroup(agentsToShow, termFor));
         }
         if (localAndRemoteGroups.length > 0) {
             items.push(groupsGroup(localAndRemoteGroups));
@@ -406,10 +423,34 @@ export default class AtMentionProvider extends Provider {
             items.push(specialMentionsGroup(specialMentions));
         }
         if (remoteNonMembers.length > 0) {
-            items.push(nonMembersGroup(remoteNonMembers));
+            items.push(nonMembersGroup(remoteNonMembers, termFor));
         }
 
         return items;
+    }
+
+    // createTermFor returns the text a suggestion inserts into the text box. With a nickname-style
+    // teammate name display that is @Nickname, converted back to @username when the message is sent
+    // (see resolveDisplayMentions). A name shared with someone else in the list, or equal to another
+    // listed username, stays @username so the choice is never ambiguous.
+    createTermFor(profiles: CreatedProfile[]) {
+        const counts = new Map<string, number>();
+        const usernames = new Set(profiles.map((profile) => profile.username.toLowerCase()));
+        const keyOf = (profile: CreatedProfile) => mentionDisplayName(profile, this.teammateNameDisplay).trim().toLowerCase();
+        profiles.forEach((profile) => counts.set(keyOf(profile), (counts.get(keyOf(profile)) ?? 0) + 1));
+
+        return (profile: CreatedProfile) => {
+            const display = mentionDisplayName(profile, this.teammateNameDisplay);
+            const key = keyOf(profile);
+            const sameAsUsername = key === profile.username.toLowerCase();
+            const clashesWithOtherUsername = usernames.has(key) && !sameAsUsername;
+            if (sameAsUsername || clashesWithOtherUsername || counts.get(key) !== 1) {
+                return '@' + profile.username;
+            }
+
+            this.termToUsername.set(('@' + display).toLowerCase(), profile.username);
+            return '@' + display;
+        };
     }
 
     // updateMatches invokes the resultCallback with the metadata for rendering at mentions
@@ -481,6 +522,10 @@ export default class AtMentionProvider extends Provider {
 
     handleCompleteWord(term: string) {
         const termWithoutAt = term.replace(/^[@＠]/, '');
+        const pickedUsername = this.termToUsername.get(term.toLowerCase());
+        if (pickedUsername) {
+            rememberPickedMention(termWithoutAt, pickedUsername);
+        }
         this.lastCompletedWord = termWithoutAt;
         this.lastPrefixWithNoResults = '';
     }
@@ -506,32 +551,35 @@ export default class AtMentionProvider extends Provider {
     }
 }
 
-export function membersGroup(items: CreatedProfile[]) {
+type TermFor = (profile: CreatedProfile) => string;
+const usernameTerm: TermFor = (profile) => '@' + profile.username;
+
+export function membersGroup(items: CreatedProfile[], termFor: TermFor = usernameTerm) {
     return {
         key: 'members',
         label: defineMessage({id: 'suggestion.mention.members', defaultMessage: 'Channel Members'}),
         items,
-        terms: items.map((profile) => '@' + profile.username),
+        terms: items.map(termFor),
         component: AtMentionSuggestion,
     };
 }
 
-export function defaultAgentGroup(item: CreatedProfile) {
+export function defaultAgentGroup(item: CreatedProfile, termFor: TermFor = usernameTerm) {
     return {
         key: 'defaultAgent',
         items: [item],
-        terms: ['@' + item.username],
+        terms: [termFor(item)],
         component: AtMentionSuggestion,
     };
 }
 
-export function agentsGroup(items: CreatedProfile[]) {
+export function agentsGroup(items: CreatedProfile[], termFor: TermFor = usernameTerm) {
     return {
         key: 'agents',
         label: defineMessage({id: 'suggestion.mention.agents', defaultMessage: 'Agents'}),
         icon: <CreationOutlineIcon size={16}/>,
         items,
-        terms: items.map((profile) => '@' + profile.username),
+        terms: items.map(termFor),
         component: AtMentionSuggestion,
     };
 }
@@ -556,12 +604,12 @@ export function specialMentionsGroup(items: Array<{username: string}>) {
     };
 }
 
-export function nonMembersGroup(items: CreatedProfile[]) {
+export function nonMembersGroup(items: CreatedProfile[], termFor: TermFor = usernameTerm) {
     return {
         key: 'nonMembers',
         label: defineMessage({id: 'suggestion.mention.nonmembers', defaultMessage: 'Not in Channel'}),
         items,
-        terms: items.map((item) => '@' + item.username),
+        terms: items.map(termFor),
         component: AtMentionSuggestion,
     };
 }

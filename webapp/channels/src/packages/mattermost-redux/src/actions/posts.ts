@@ -37,6 +37,7 @@ import {getUnreadScrollPositionPreference, isCollapsedThreadsEnabled} from 'matt
 import {getCurrentUserId, getUsersByUsername} from 'mattermost-redux/selectors/entities/users';
 import type {ActionResult, DispatchFunc, GetStateFunc, ActionFunc, ActionFuncAsync, ThunkActionFunc} from 'mattermost-redux/types/actions';
 import {DelayedDataLoader} from 'mattermost-redux/utils/data_loader';
+import {resolveDisplayMentions} from 'mattermost-redux/utils/mention_display';
 import {scanHumanReadableStringsFromInteractiveProps} from 'mattermost-redux/utils/post_interactive_utils';
 import {isCombinedUserActivityPost} from 'mattermost-redux/utils/post_list';
 
@@ -197,6 +198,9 @@ export function createPost(
 
         let newPost = {
             ...post,
+
+            // The text box may hold @nickname; the server only understands @username.
+            message: resolveDisplayMentions(post.message, state),
             pending_post_id: pendingPostId,
             create_at: timestamp,
             update_at: timestamp,
@@ -369,16 +373,19 @@ export function deletePost(post: ExtendedPost): ActionFuncAsync {
     };
 }
 
-export function editPost(post: Post) {
-    return bindClientFunc({
-        clientFunc: Client4.patchPost,
-        onRequest: PostTypes.EDIT_POST_REQUEST,
-        onSuccess: [PostTypes.RECEIVED_POST, PostTypes.EDIT_POST_SUCCESS],
-        onFailure: PostTypes.EDIT_POST_FAILURE,
-        params: [
-            post,
-        ],
-    });
+export function editPost(post: Post): ActionFuncAsync<Post> {
+    return async (dispatch, getState) => {
+        const message = post.message === undefined ? post.message : resolveDisplayMentions(post.message, getState());
+        return dispatch(bindClientFunc({
+            clientFunc: Client4.patchPost,
+            onRequest: PostTypes.EDIT_POST_REQUEST,
+            onSuccess: [PostTypes.RECEIVED_POST, PostTypes.EDIT_POST_SUCCESS],
+            onFailure: PostTypes.EDIT_POST_FAILURE,
+            params: [
+                {...post, message},
+            ],
+        }));
+    };
 }
 
 function getUnreadPostData(unreadChan: ChannelUnread, state: GlobalState) {

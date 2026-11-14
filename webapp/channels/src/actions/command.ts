@@ -17,6 +17,7 @@ import {isMarketplaceEnabled} from 'mattermost-redux/selectors/entities/general'
 import {haveICurrentTeamPermission} from 'mattermost-redux/selectors/entities/roles';
 import {getCurrentRelativeTeamUrl, getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
+import {resolveDisplayMentions} from 'mattermost-redux/utils/mention_display';
 
 import * as GlobalActions from 'actions/global_actions';
 import * as PostActions from 'actions/post_actions';
@@ -196,7 +197,8 @@ export function executeCommand(message: string, args: CommandArgs): ActionFuncAs
 
         let data;
         try {
-            data = await Client4.executeCommand(msg, args);
+            // The text box may hold @nickname (e.g. /msg @Nickname); the server only understands @username.
+            data = await Client4.executeCommand(resolveDisplayMentions(msg, state), args);
         } catch (err) {
             return {error: err};
         }

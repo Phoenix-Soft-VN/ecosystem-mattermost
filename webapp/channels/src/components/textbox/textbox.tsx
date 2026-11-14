@@ -72,6 +72,7 @@ export type Props = {
     openWhenEmpty?: boolean;
     priorityProfiles?: UserProfile[];
     defaultAgent?: Agent;
+    teammateNameDisplay?: string;
     hasLabels?: boolean;
     hasError?: boolean;
 };
@@ -114,6 +115,7 @@ export default class Textbox extends React.PureComponent<Props> {
                 searchAssociatedGroupsForReference: (prefix: string) => this.props.actions.searchAssociatedGroupsForReference(prefix, this.props.currentTeamId, this.props.channelId),
                 priorityProfiles: this.props.priorityProfiles,
                 defaultAgent: this.props.defaultAgent,
+                teammateNameDisplay: this.props.teammateNameDisplay,
             }),
             new ChannelMentionProvider(props.actions.autocompleteChannels, props.delayChannelAutocomplete),
             new EmoticonProvider(),
@@ -150,7 +152,8 @@ export default class Textbox extends React.PureComponent<Props> {
             this.props.useChannelMentions !== prevProps.useChannelMentions ||
             this.props.currentTeamId !== prevProps.currentTeamId ||
             this.props.priorityProfiles !== prevProps.priorityProfiles ||
-            this.props.defaultAgent !== prevProps.defaultAgent) {
+            this.props.defaultAgent !== prevProps.defaultAgent ||
+            this.props.teammateNameDisplay !== prevProps.teammateNameDisplay) {
             // Update channel id for AtMentionProvider.
             for (const provider of this.suggestionProviders) {
                 if (provider instanceof AtMentionProvider) {
@@ -163,6 +166,7 @@ export default class Textbox extends React.PureComponent<Props> {
                         searchAssociatedGroupsForReference: (prefix: string) => this.props.actions.searchAssociatedGroupsForReference(prefix, this.props.currentTeamId, this.props.channelId),
                         priorityProfiles: this.props.priorityProfiles,
                         defaultAgent: this.props.defaultAgent,
+                        teammateNameDisplay: this.props.teammateNameDisplay,
                     });
                 }
             }

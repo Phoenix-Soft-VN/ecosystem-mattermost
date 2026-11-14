@@ -3,6 +3,8 @@
 
 import AtMentionProvider, {groupsGroup, membersGroup, nonMembersGroup, otherMembersGroup, specialMentionsGroup, defaultAgentGroup, type Props} from 'components/suggestion/at_mention_provider/at_mention_provider';
 
+import {forgetPickedMentionsForTests, resolveDisplayMentions} from 'mattermost-redux/utils/mention_display';
+
 import {TestHelper} from 'utils/test_helper';
 
 jest.useFakeTimers();
@@ -1800,5 +1802,67 @@ describe('groupsGroup', () => {
 
     test('should set terms matching the name of each group', () => {
         expect(groupsGroup([group1, group2, group3]).terms).toEqual(['@board', '@developers', '@software-engineers']);
+    });
+});
+
+describe('nickname terms', () => {
+    const params: Props = {
+        currentUserId: 'me',
+        channelId: 'channelid1',
+        autocompleteUsersInChannel: jest.fn().mockResolvedValue(false),
+        autocompleteGroups: null,
+        useChannelMentions: true,
+        searchAssociatedGroupsForReference: jest.fn().mockResolvedValue(false),
+        priorityProfiles: [],
+        defaultAgent: undefined,
+        teammateNameDisplay: 'nickname_full_name',
+    };
+    const bob = TestHelper.getUserMock({id: 'bobid', username: 'u05e97796959c', first_name: '', last_name: '', nickname: 'Bob Test'});
+    const carol = TestHelper.getUserMock({id: 'carolid', username: 'ucarol', first_name: '', last_name: '', nickname: 'Carol Test'});
+
+    beforeEach(() => forgetPickedMentionsForTests());
+
+    it('inserts @nickname when the teammate name display prefers nicknames', () => {
+        const provider = new AtMentionProvider(params);
+        expect(membersGroup([bob, carol], provider.createTermFor([bob, carol])).terms).toEqual(['@Bob Test', '@Carol Test']);
+    });
+
+    it('keeps @username when the teammate name display shows usernames', () => {
+        const provider = new AtMentionProvider({...params, teammateNameDisplay: 'username'});
+        expect(membersGroup([bob, carol], provider.createTermFor([bob, carol])).terms).toEqual(['@u05e97796959c', '@ucarol']);
+    });
+
+    it('falls back to @username for a nickname shared by several people', () => {
+        const twin = TestHelper.getUserMock({id: 'twinid', username: 'utwin', first_name: '', last_name: '', nickname: 'Bob Test'});
+        const provider = new AtMentionProvider(params);
+        expect(membersGroup([bob, twin, carol], provider.createTermFor([bob, twin, carol])).terms).toEqual(['@u05e97796959c', '@utwin', '@Carol Test']);
+    });
+
+    it('falls back to @username when a nickname equals another listed username', () => {
+        const decoy = TestHelper.getUserMock({id: 'decoyid', username: 'udecoy', first_name: '', last_name: '', nickname: 'ucarol'});
+        const provider = new AtMentionProvider(params);
+        expect(membersGroup([decoy, carol], provider.createTermFor([decoy, carol])).terms).toEqual(['@udecoy', '@Carol Test']);
+    });
+
+    it('remembers the picked mention so it resolves to that user when sent', () => {
+        const twin = TestHelper.getUserMock({id: 'twinid', username: 'utwin', first_name: '', last_name: '', nickname: 'Carol Test'});
+        const state = {
+            entities: {
+                general: {config: {TeammateNameDisplay: 'nickname_full_name'}, license: {}},
+                preferences: {myPreferences: {}},
+                users: {profiles: {[carol.id]: carol, [twin.id]: twin}},
+            },
+        } as unknown as Parameters<typeof resolveDisplayMentions>[1];
+
+        // Two people called "Carol Test" are ambiguous until one is picked from the list.
+        expect(resolveDisplayMentions('@Carol Test', state)).toBe('@Carol Test');
+
+        // Only one of them is offered with the nickname (the list is scoped to the channel).
+        const provider = new AtMentionProvider(params);
+        const [term] = membersGroup([carol], provider.createTermFor([carol])).terms;
+        expect(term).toBe('@Carol Test');
+        provider.handleCompleteWord(term);
+
+        expect(resolveDisplayMentions('hi @Carol Test', state)).toBe('hi @ucarol');
     });
 });
