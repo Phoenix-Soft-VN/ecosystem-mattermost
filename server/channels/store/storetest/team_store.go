@@ -1412,6 +1412,83 @@ func testGetMembers(t *testing.T, rctx request.CTX, ss store.Store) {
 		assert.Equal(t, u4.Id, ms[1].UserId)
 	})
 
+	t.Run("Test GetMembers Order By Username With View Restrictions", func(t *testing.T) {
+		teamId1 := model.NewId()
+		teamId2 := model.NewId()
+
+		// Sorting by username joins Users itself, so it must not collide with the join that the
+		// view restrictions add, and the restricted query must still be orderable.
+		// Earlier subtests already use single-letter usernames in this database, so share a unique prefix.
+		prefix := "rv" + strings.ToLower(model.NewId()[:8])
+		letters := []string{"d", "a", "c", "b"}
+		users := make([]*model.User, len(letters))
+		for i, letter := range letters {
+			u := &model.User{Username: prefix + letter, Email: MakeEmail()}
+			if letter == "c" {
+				u.DeleteAt = int64(1)
+			}
+			saved, err := ss.User().Save(rctx, u)
+			require.NoError(t, err)
+			users[i] = saved
+		}
+		byName := func(name string) string {
+			for _, u := range users {
+				if u.Username == prefix+name {
+					return u.Id
+				}
+			}
+			return ""
+		}
+
+		members := []*model.TeamMember{}
+		for _, u := range users {
+			members = append(members, &model.TeamMember{TeamId: teamId1, UserId: u.Id})
+		}
+		// a and b are also in team 2, so a team-2 restriction keeps only them.
+		members = append(members, &model.TeamMember{TeamId: teamId2, UserId: byName("a")}, &model.TeamMember{TeamId: teamId2, UserId: byName("b")})
+		_, nErr := ss.Team().SaveMultipleMembers(members, -1)
+		require.NoError(t, nErr)
+
+		ids := func(ms []*model.TeamMember) []string {
+			out := make([]string, len(ms))
+			for i, m := range ms {
+				out[i] = m.UserId
+			}
+			return out
+		}
+
+		ms, nErr := ss.Team().GetMembers(teamId1, 0, 100, &model.TeamMembersGetOptions{
+			Sort:             model.USERNAME,
+			ViewRestrictions: &model.ViewUsersRestrictions{Teams: []string{teamId1}},
+		})
+		require.NoError(t, nErr)
+		assert.Equal(t, []string{byName("a"), byName("b"), byName("c"), byName("d")}, ids(ms))
+
+		ms, nErr = ss.Team().GetMembers(teamId1, 0, 100, &model.TeamMembersGetOptions{
+			Sort:                model.USERNAME,
+			ExcludeDeletedUsers: true,
+			ViewRestrictions:    &model.ViewUsersRestrictions{Teams: []string{teamId2}},
+		})
+		require.NoError(t, nErr)
+		assert.Equal(t, []string{byName("a"), byName("b")}, ids(ms))
+
+		// Several restricted teams must not duplicate a member that belongs to more than one.
+		ms, nErr = ss.Team().GetMembers(teamId1, 0, 100, &model.TeamMembersGetOptions{
+			Sort:             model.USERNAME,
+			ViewRestrictions: &model.ViewUsersRestrictions{Teams: []string{teamId1, teamId2}},
+		})
+		require.NoError(t, nErr)
+		assert.Equal(t, []string{byName("a"), byName("b"), byName("c"), byName("d")}, ids(ms))
+
+		// The Phoenix tenant predicate composes with the same query; no user is bound to this tenant.
+		ms, nErr = ss.Team().GetMembers(teamId1, 0, 100, &model.TeamMembersGetOptions{
+			Sort:             model.USERNAME,
+			ViewRestrictions: &model.ViewUsersRestrictions{PhoenixTenantID: model.NewId(), Teams: []string{teamId1}},
+		})
+		require.NoError(t, nErr)
+		assert.Empty(t, ms)
+	})
+
 	t.Run("Test GetMembers Excluded Deleted Users", func(t *testing.T) {
 		teamId1 := model.NewId()
 		teamId2 := model.NewId()

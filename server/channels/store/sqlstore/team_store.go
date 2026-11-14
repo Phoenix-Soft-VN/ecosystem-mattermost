@@ -1746,15 +1746,20 @@ func applyTeamMemberViewRestrictionsFilter(query sq.SelectBuilder, restrictions 
 		channels[i] = v
 	}
 
-	resultQuery := query.Join("Users ru ON (TeamMembers.UserId = ru.Id)")
+	// Each restriction is an EXISTS predicate rather than a join. A member passes when the user is in
+	// one of the listed teams and one of the listed channels, exactly as the joins did, but the query
+	// keeps one row per member: no DISTINCT is needed, and callers stay free to ORDER BY columns of
+	// their own Users join (GetMembers sorts by Users.Username, which a second Users alias or a
+	// DISTINCT would make ambiguous or invalid).
+	resultQuery := query.Where("EXISTS (SELECT 1 FROM Users ru WHERE ru.Id = TeamMembers.UserId)")
 	if len(restrictions.Teams) > 0 {
-		resultQuery = resultQuery.Join(fmt.Sprintf("TeamMembers rtm ON ( rtm.UserId = ru.Id AND rtm.DeleteAt = 0 AND rtm.TeamId IN (%s))", sq.Placeholders(len(teams))), teams...)
+		resultQuery = resultQuery.Where(sq.Expr(fmt.Sprintf("EXISTS (SELECT 1 FROM TeamMembers rtm WHERE rtm.UserId = TeamMembers.UserId AND rtm.DeleteAt = 0 AND rtm.TeamId IN (%s))", sq.Placeholders(len(teams))), teams...))
 	}
 	if len(restrictions.Channels) > 0 {
-		resultQuery = resultQuery.Join(fmt.Sprintf("ChannelMembers rcm ON ( rcm.UserId = ru.Id AND rcm.ChannelId IN (%s))", sq.Placeholders(len(channels))), channels...)
+		resultQuery = resultQuery.Where(sq.Expr(fmt.Sprintf("EXISTS (SELECT 1 FROM ChannelMembers rcm WHERE rcm.UserId = TeamMembers.UserId AND rcm.ChannelId IN (%s))", sq.Placeholders(len(channels))), channels...))
 	}
 
-	return resultQuery.Distinct()
+	return resultQuery
 }
 
 func applyTeamMemberViewRestrictionsFilterForStats(query sq.SelectBuilder, restrictions *model.ViewUsersRestrictions) sq.SelectBuilder {
