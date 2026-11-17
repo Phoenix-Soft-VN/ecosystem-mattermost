@@ -100,11 +100,6 @@ func getSubscription(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getSubscription", "api.cloud.license_error", nil, "", http.StatusForbidden)
-		return
-	}
-
 	subscription, err := c.App.Cloud().GetSubscription(c.AppContext.Session().UserId)
 	if err != nil {
 		c.Err = model.NewAppError("Api4.getSubscription", "api.cloud.request_error", nil, "", http.StatusInternalServerError).Wrap(err)
@@ -197,11 +192,6 @@ func validateWorkspaceBusinessEmail(c *Context, w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.validateWorkspaceBusinessEmail", "api.cloud.license_error", nil, "", http.StatusForbidden)
-		return
-	}
-
 	if !c.App.SessionHasPermissionTo(*c.AppContext.Session(), model.PermissionSysconsoleWriteBilling) {
 		c.SetPermissionError(model.PermissionSysconsoleWriteBilling)
 		return
@@ -245,11 +235,6 @@ func validateWorkspaceBusinessEmail(c *Context, w http.ResponseWriter, r *http.R
 func getCloudProducts(c *Context, w http.ResponseWriter, r *http.Request) {
 	ensured := ensureCloudInterface(c, "Api4.getCloudProducts")
 	if !ensured {
-		return
-	}
-
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getCloudProducts", "api.cloud.license_error", nil, "", http.StatusForbidden)
 		return
 	}
 
@@ -298,11 +283,6 @@ func getCloudLimits(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getCloudLimits", "api.cloud.license_error", nil, "", http.StatusForbidden)
-		return
-	}
-
 	limits, err := c.App.Cloud().GetCloudLimits(c.AppContext.Session().UserId)
 	if err != nil {
 		c.Err = model.NewAppError("Api4.getCloudLimits", "api.cloud.request_error", nil, "", http.StatusInternalServerError).Wrap(err)
@@ -323,11 +303,6 @@ func getCloudLimits(c *Context, w http.ResponseWriter, r *http.Request) {
 func getCloudCustomer(c *Context, w http.ResponseWriter, r *http.Request) {
 	ensured := ensureCloudInterface(c, "Api4.getCloudCustomer")
 	if !ensured {
-		return
-	}
-
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getCloudCustomer", "api.cloud.license_error", nil, "", http.StatusForbidden)
 		return
 	}
 
@@ -382,11 +357,6 @@ func updateCloudCustomer(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.updateCloudCustomer", "api.cloud.license_error", nil, "", http.StatusForbidden)
-		return
-	}
-
 	if !c.App.SessionHasPermissionTo(*c.AppContext.Session(), model.PermissionSysconsoleWriteBilling) {
 		c.SetPermissionError(model.PermissionSysconsoleWriteBilling)
 		return
@@ -424,11 +394,6 @@ func updateCloudCustomer(c *Context, w http.ResponseWriter, r *http.Request) {
 func updateCloudCustomerAddress(c *Context, w http.ResponseWriter, r *http.Request) {
 	ensured := ensureCloudInterface(c, "Api4.updateCloudCustomerAddress")
 	if !ensured {
-		return
-	}
-
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.updateCloudCustomerAddress", "api.cloud.license_error", nil, "", http.StatusForbidden)
 		return
 	}
 
@@ -472,11 +437,6 @@ func getInvoicesForSubscription(c *Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getInvoicesForSubscription", "api.cloud.license_error", nil, "", http.StatusForbidden)
-		return
-	}
-
 	if !c.App.SessionHasPermissionTo(*c.AppContext.Session(), model.PermissionSysconsoleReadBilling) {
 		c.SetPermissionError(model.PermissionSysconsoleReadBilling)
 		return
@@ -502,11 +462,6 @@ func getInvoicesForSubscription(c *Context, w http.ResponseWriter, r *http.Reque
 func getSubscriptionInvoicePDF(c *Context, w http.ResponseWriter, r *http.Request) {
 	ensured := ensureCloudInterface(c, "Api4.getSubscriptionInvoicePDF")
 	if !ensured {
-		return
-	}
-
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.getSubscriptionInvoicePDF", "api.cloud.license_error", nil, "", http.StatusForbidden)
 		return
 	}
 
@@ -542,11 +497,6 @@ func getSubscriptionInvoicePDF(c *Context, w http.ResponseWriter, r *http.Reques
 func handleCWSWebhook(c *Context, w http.ResponseWriter, r *http.Request) {
 	ensured := ensureCloudInterface(c, "Api4.handleCWSWebhook")
 	if !ensured {
-		return
-	}
-
-	if !c.App.Channels().License().IsCloud() {
-		c.Err = model.NewAppError("Api4.handleCWSWebhook", "api.cloud.license_error", nil, "", http.StatusForbidden)
 		return
 	}
 

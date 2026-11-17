@@ -13,7 +13,7 @@ import store from 'stores/redux_store';
 
 import RestrictedIndicator from 'components/widgets/menu/menu_items/restricted_indicator';
 
-import {CloudProducts, getLicenseTier, LicenseSkus} from 'utils/constants';
+import {CloudProducts, LicenseSkus} from 'utils/constants';
 import {isCloudLicense} from 'utils/license_utils';
 
 import type {Check, ConsoleAccess} from './types';
@@ -53,12 +53,20 @@ export const it = {
     clientConfigIsFalse: (setting: keyof ClientConfig) => () => getClientConfig(store.getState())[setting] !== 'true',
     configContains: (group: keyof Partial<AdminConfig>, setting: string, word: string) => (config: Partial<AdminConfig>) => Boolean((config[group] as any)?.[setting]?.includes(word)),
     enterpriseReady: (config: Partial<AdminConfig>, state: any, license?: ClientLicense, enterpriseReady?: boolean) => Boolean(enterpriseReady),
-    licensed: (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => license?.IsLicensed === 'true',
+
+    // Phoenix experiment: licensed, minLicenseTier and licensedForFeature for every feature except
+    // 'Cloud' follow the permissive server license and never deny based on the client license.
+    // Cloud classification (licensedForFeature('Cloud'), cloudLicensed, licensedForCloudStarter) and
+    // exact-SKU classification (licensedForSku, isFreeEdition) is unchanged so conflicting product
+    // modes are not enabled together.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the license argument is intentionally ignored
+    licensed: (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => true,
     isFreeEdition: (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => license?.IsLicensed !== 'true' || license?.SkuShortName === LicenseSkus.Entry,
     cloudLicensed: (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => Boolean(license?.IsLicensed && isCloudLicense(license)),
-    licensedForFeature: (feature: string) => (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => Boolean(license?.IsLicensed && license[feature] === 'true'),
+    licensedForFeature: (feature: string) => (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => (feature === 'Cloud' ? Boolean(license?.IsLicensed && license[feature] === 'true') : true),
     licensedForSku: (skuName: string) => (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => Boolean(license?.IsLicensed && license.SkuShortName === skuName),
-    minLicenseTier: (skuName: string) => (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => Boolean(license?.IsLicensed && getLicenseTier(license.SkuShortName) >= getLicenseTier(skuName)),
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the tier and license arguments are intentionally ignored
+    minLicenseTier: (skuName: string) => (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => true,
     licensedForCloudStarter: (config: Partial<AdminConfig>, state: any, license?: ClientLicense) => Boolean(license?.IsLicensed && isCloudLicense(license) && license.SkuShortName === LicenseSkus.Starter),
     hidePaymentInfo: (config: Partial<AdminConfig>, state: any, license?: ClientLicense, enterpriseReady?: boolean, consoleAccess?: ConsoleAccess, cloud?: CloudState) => {
         if (!cloud) {

@@ -30,9 +30,9 @@ func (ch *Channels) RequestTrialLicenseWithExtraFields(rctx request.CTX, request
 		}
 	}
 
-	if ch.srv.Cloud.ValidateBusinessEmail(requesterID, trialRequest.ContactEmail) != nil {
-		return model.NewAppError("RequestTrialLicense", "api.license.request-trial.bad-request.business-email", nil, "", http.StatusBadRequest)
-	}
+	// Phoenix experiment: the business-email check is performed by the vendor's Customer
+	// Web Service (and ch.srv.Cloud is nil without the Enterprise implementation), so it is
+	// skipped. Trial requests are satisfied locally; see PlatformService.RequestTrialLicense.
 
 	// Create a new struct only using the fields from the request that are allowed to be set by the client
 	sanitizedRequest := &model.TrialLicenseRequest{

@@ -104,26 +104,9 @@ func addLicense(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// skip the restrictions if license is a sanctioned trial
-	if !license.IsSanctionedTrial() && license.IsTrialLicense() {
-		lm := c.App.Srv().Platform().LicenseManager()
-		if lm == nil {
-			c.Err = model.NewAppError("addLicense", "api.license.upgrade_needed.app_error", nil, "", http.StatusInternalServerError)
-			return
-		}
-
-		canStartTrialLicense, err := lm.CanStartTrial()
-		if err != nil {
-			c.Err = model.NewAppError("addLicense", "api.license.add_license.open.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-			return
-		}
-
-		if !canStartTrialLicense {
-			c.Err = model.NewAppError("addLicense", "api.license.request-trial.can-start-trial.not-allowed", nil, "", http.StatusBadRequest)
-			return
-		}
-	}
-
+	// Phoenix experiment: no trial-eligibility gate (it needed the Enterprise license
+	// manager). The response below is the decoded UPLOADED license; the runtime license
+	// that is actually effective is the permissive one (see GET /license/client).
 	license, appErr = c.App.Srv().SaveLicense(licenseBytes)
 	if appErr != nil {
 		if appErr.Id == model.ExpiredLicenseError {
@@ -172,7 +155,7 @@ func previewLicense(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return the parsed license without saving it
+	// Return the parsed (uploaded, not runtime) license without saving it
 	if err := json.NewEncoder(w).Encode(license); err != nil {
 		c.Logger.Warn("Error while writing response", mlog.Err(err))
 	}
@@ -209,22 +192,9 @@ func requestTrialLicense(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if c.App.Srv().Platform().LicenseManager() == nil {
-		c.Err = model.NewAppError("requestTrialLicense", "api.license.upgrade_needed.app_error", nil, "", http.StatusForbidden)
-		return
-	}
-
-	canStartTrialLicense, err := c.App.Srv().Platform().LicenseManager().CanStartTrial()
-	if err != nil {
-		c.Err = model.NewAppError("requestTrialLicense", "api.license.request-trial.can-start-trial.error", nil, "", http.StatusInternalServerError).Wrap(err)
-		return
-	}
-
-	if !canStartTrialLicense {
-		c.Err = model.NewAppError("requestTrialLicense", "api.license.request-trial.can-start-trial.not-allowed", nil, "", http.StatusBadRequest)
-		return
-	}
-
+	// Phoenix experiment: no Enterprise license manager or CanStartTrial gate. The trial
+	// request is validated and then satisfied locally by the permissive license; nothing is
+	// sent to the vendor.
 	var trialRequest *model.TrialLicenseRequest
 
 	b, readErr := io.ReadAll(r.Body)
@@ -233,9 +203,14 @@ func requestTrialLicense(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = json.Unmarshal(b, &trialRequest)
+	err := json.Unmarshal(b, &trialRequest)
 	if err != nil {
 		c.Err = model.NewAppError("requestTrialLicense", "api.license.request-trial.bad-request", nil, "", http.StatusBadRequest).Wrap(err)
+		return
+	}
+
+	if trialRequest == nil {
+		c.Err = model.NewAppError("requestTrialLicense", "api.license.request-trial.bad-request", nil, "", http.StatusBadRequest)
 		return
 	}
 

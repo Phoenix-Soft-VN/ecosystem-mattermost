@@ -6,7 +6,6 @@ package utils
 import (
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -66,53 +65,48 @@ func (l *LicenseValidatorImpl) LicenseFromBytes(licenseBytes []byte) (*model.Lic
 	return &license, nil
 }
 
+// ValidateLicense decodes the signed license envelope (base64 of a JSON plaintext followed
+// by a 256 byte signature) and returns the plaintext.
+//
+// Phoenix experiment: the RSA signature and the service environment key (production/test)
+// are intentionally NOT verified, so a structurally valid license decodes for local
+// evaluation. Base64, minimum envelope length and JSON-object structure are still
+// validated; malformed, truncated or non-object payloads are rejected. Restore the
+// signature check (see PHOENIX_LICENSE_BYPASS_EXPERIMENT.md) to resume signed-license gating.
 func (l *LicenseValidatorImpl) ValidateLicense(signed []byte) (string, error) {
 	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(signed)))
 
-	_, err := base64.StdEncoding.Decode(decoded, signed)
+	n, err := base64.StdEncoding.Decode(decoded, signed)
 	if err != nil {
 		return "", fmt.Errorf("encountered error decoding license: %w", err)
 	}
 
-	// remove null terminator
-	for len(decoded) > 0 && decoded[len(decoded)-1] == byte(0) {
-		decoded = decoded[:len(decoded)-1]
-	}
+	// Use exactly the bytes that were decoded. Do not trim trailing zero bytes: the final 256
+	// bytes are the signature, and a valid signature may legitimately end in 0x00.
+	decoded = decoded[:n]
 
 	if len(decoded) <= 256 {
-		return "", fmt.Errorf("Signed license not long enough")
+		return "", fmt.Errorf("Signed license not long enough: %d decoded bytes, more than 256 are required", len(decoded))
 	}
 
+	// The final 256 bytes are the signature, which is ignored in this build.
 	plaintext := decoded[:len(decoded)-256]
-	signature := decoded[len(decoded)-256:]
 
-	primaryKey, alternateKey := licenseKeysForEnvironment(model.GetServiceEnvironment())
-
-	h := sha512.New()
-	h.Write(plaintext)
-	d := h.Sum(nil)
-
-	if err := verifyLicenseSignature(primaryKey, d, signature); err != nil {
-		// Only a genuine signature mismatch should trigger the wrong-environment
-		// fallback. Any other failure (e.g. malformed key material) means the
-		// current environment's key is broken, so surface it unchanged.
-		if !errors.Is(err, rsa.ErrVerification) {
-			return "", err
-		}
-
-		// The license did not verify against this environment's key. If it verifies
-		// against the other environment's key, the license is genuine but was signed
-		// for a different service environment, so report which way the mismatch goes.
-		if altErr := verifyLicenseSignature(alternateKey, d, signature); altErr == nil {
-			return "", wrongEnvironmentError(model.GetServiceEnvironment())
-		} else if !errors.Is(altErr, rsa.ErrVerification) {
-			return "", altErr
-		}
-		return "", fmt.Errorf("Invalid signature: %w", err)
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(plaintext, &object); err != nil {
+		return "", fmt.Errorf("license payload is not valid JSON: %w", err)
+	}
+	if object == nil {
+		return "", fmt.Errorf("license payload is not a JSON object")
 	}
 
 	return string(plaintext), nil
 }
+
+// Phoenix experiment: wrongEnvironmentError, licenseKeysForEnvironment and
+// verifyLicenseSignature are no longer called by ValidateLicense. They are kept so the
+// exported sentinels and signature helpers stay source-compatible and restoring the
+// signature check stays a small change.
 
 // wrongEnvironmentError returns the sentinel describing a license that is genuine but
 // signed for the opposite service environment from the one this server runs in.

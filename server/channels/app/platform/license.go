@@ -4,7 +4,6 @@
 package platform
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -163,20 +162,13 @@ func (ps *PlatformService) SaveLicense(licenseBytes []byte) (*model.License, *mo
 		return nil, model.NewAppError("addLicense", "api.license.add_license.invalid.app_error", nil, "", http.StatusBadRequest).Wrap(errors.New("license.Features.Users is nil"))
 	}
 
-	uniqueUserCount, err := ps.Store.User().Count(model.UserCountOptions{})
-	if err != nil {
-		return nil, model.NewAppError("addLicense", "api.license.add_license.invalid_count.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-	}
-
-	// Single-channel guests are free and should not count against licensed seats.
-	effectiveUserCount := uniqueUserCount
-	if scgCount, scgErr := ps.Store.User().AnalyticsGetSingleChannelGuestCount(); scgErr == nil {
-		effectiveUserCount = max(uniqueUserCount-scgCount, 0)
-	}
-
-	if effectiveUserCount > int64(*license.Features.Users) {
-		return nil, model.NewAppError("addLicense", "api.license.add_license.unique_users.app_error", map[string]any{"Users": *license.Features.Users, "Count": effectiveUserCount}, "", http.StatusBadRequest)
-	}
+	// Phoenix experiment: the uploaded license's seat count is not enforced (the runtime
+	// license is the normalized permissive one), so no user count queries are needed.
+	// The uploaded license remains stored as the record; its features are not applied.
+	ps.logger.Info("Uploaded license is stored; the Phoenix permissive license stays effective.",
+		mlog.String("uploaded_license_id", license.Id),
+		mlog.String("effective_license_id", ps.License().Id),
+	)
 
 	if license.IsExpired() {
 		return nil, model.NewAppError("addLicense", model.ExpiredLicenseError, nil, "", http.StatusBadRequest)
@@ -365,55 +357,23 @@ func (ps *PlatformService) GetSanitizedClientLicense() map[string]string {
 	return utils.GetSanitizedClientLicense(ps.ClientLicense())
 }
 
-// RequestTrialLicense request a trial license from the mattermost official license server
+// RequestTrialLicense satisfies a trial request locally.
+//
+// Phoenix experiment: the permissive license is already effective, so no request is sent
+// to the vendor license server and no trial license is invented or persisted. The effective
+// license is re-applied so the client license map and license listeners are refreshed.
 func (ps *PlatformService) RequestTrialLicense(trialRequest *model.TrialLicenseRequest) *model.AppError {
-	trialRequestJSON, err := json.Marshal(trialRequest)
-	if err != nil {
-		return model.NewAppError("RequestTrialLicense", "api.unmarshal_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	if trialRequest == nil {
+		return model.NewAppError("RequestTrialLicense", "api.license.request-trial.bad-request", nil, "", http.StatusBadRequest)
 	}
 
-	resp, err := http.Post(ps.getRequestTrialURL(), "application/json", bytes.NewBuffer(trialRequestJSON))
-	if err != nil {
-		return model.NewAppError("RequestTrialLicense", "api.license.request_trial_license.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-	}
-	defer resp.Body.Close()
+	ps.SetLicense(model.NewPermissiveLicense())
 
-	// CloudFlare sitting in front of the Customer Portal will block this request with a 451 response code in the event that the request originates from a country sanctioned by the U.S. Government.
-	if resp.StatusCode == http.StatusUnavailableForLegalReasons {
-		return model.NewAppError("RequestTrialLicense", "api.license.request_trial_license.embargoed", nil, "Request for trial license came from an embargoed country", http.StatusUnavailableForLegalReasons)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return model.NewAppError("RequestTrialLicense", "api.license.request_trial_license.app_error", nil,
-			fmt.Sprintf("Unexpected HTTP status code %q returned by server", resp.Status), http.StatusInternalServerError)
-	}
-
-	var licenseResponse map[string]string
-	err = json.NewDecoder(resp.Body).Decode(&licenseResponse)
-	if err != nil {
-		ps.logger.Warn("Error decoding license response", mlog.Err(err))
-	}
-
-	if _, ok := licenseResponse["license"]; !ok {
-		return model.NewAppError("RequestTrialLicense", "api.license.request_trial_license.app_error", nil, licenseResponse["message"], http.StatusBadRequest)
-	}
-
-	if _, err := ps.SaveLicense([]byte(licenseResponse["license"])); err != nil {
-		return err
-	}
-
-	if err := ps.ReloadConfig(); err != nil {
-		ps.logger.Warn("Failed to reload config after requesting trial license", mlog.Err(err))
-	}
-	if appErr := ps.InvalidateAllCaches(); appErr != nil {
-		ps.logger.Warn("Failed to invalidate cache after requesting trial license", mlog.Err(appErr))
+	if ps.logger != nil {
+		ps.logger.Info("Trial license request satisfied locally by the Phoenix permissive license; no vendor request was sent.")
 	}
 
 	return nil
-}
-
-func (ps *PlatformService) getRequestTrialURL() string {
-	return fmt.Sprintf("%s/api/v1/trials", *ps.Config().CloudSettings.CWSURL)
 }
 
 func (ps *PlatformService) logLicense(message string, license *model.License) {

@@ -1,76 +1,40 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import moment from 'moment';
-
 import type {Product} from '@mattermost/types/cloud';
 import type {ClientLicense} from '@mattermost/types/config';
 
-import {CloudProducts, getLicenseTier, LicenseSkus, SelfHostedProducts} from 'utils/constants';
+import {CloudProducts, LicenseSkus, SelfHostedProducts} from 'utils/constants';
 
-const LICENSE_EXPIRY_NOTIFICATION = 1000 * 60 * 60 * 24 * 60; // 60 days
-const LICENSE_GRACE_PERIOD = 1000 * 60 * 60 * 24 * 10; // 10 days
+// Phoenix experiment: the server (model.NewPermissiveLicense) always reports an unexpiring,
+// fully entitled license. Expiry, trial and minimum-tier helpers follow it so the webapp never
+// gates the UI on license state. Cloud/Entry/Starter/Gov classification helpers below keep
+// their real meaning.
+const PERMISSIVE_LICENSE_DAYS_TO_EXPIRE = 36500;
 
-export function isLicenseExpiring(license: ClientLicense) {
-    // Skip license expiration checks for cloud licenses
-    if (license.IsLicensed !== 'true' || isCloudLicense(license)) {
-        return false;
-    }
+/* eslint-disable @typescript-eslint/no-unused-vars -- the license argument is intentionally ignored; callers keep their signatures */
 
-    if (license.IsTrial === 'true') {
-        return true;
-    }
-
-    const timeDiff = parseInt(license.ExpiresAt, 10) - Date.now();
-    return timeDiff <= LICENSE_EXPIRY_NOTIFICATION;
+export function isLicenseExpiring(_license: ClientLicense) {
+    return false;
 }
 
-export function daysToLicenseExpire(license: ClientLicense) {
-    if (license.IsLicensed !== 'true' || isCloudLicense(license)) {
-        return undefined;
-    }
-
-    const endDate = new Date(parseInt(license?.ExpiresAt, 10));
-    return moment(endDate).startOf('day').diff(moment().startOf('day'), 'days');
+export function daysToLicenseExpire(_license: ClientLicense) {
+    return PERMISSIVE_LICENSE_DAYS_TO_EXPIRE;
 }
 
-export function isLicenseExpired(license: ClientLicense) {
-    if (license.IsLicensed !== 'true' || isCloudLicense(license)) {
-        return false;
-    }
-
-    const endDate = new Date(parseInt(license?.ExpiresAt, 10));
-    const timeDiff = moment(endDate).startOf('day').diff(moment().startOf('day'), 'days');
-    return timeDiff < 0;
+export function isLicenseExpired(_license: ClientLicense) {
+    return false;
 }
 
-export function isLicensePastGracePeriod(license: ClientLicense) {
-    if (license.IsLicensed !== 'true' || isCloudLicense(license)) {
-        return false;
-    }
-
-    const timeDiff = Date.now() - parseInt(license.ExpiresAt, 10);
-    return timeDiff > LICENSE_GRACE_PERIOD;
+export function isLicensePastGracePeriod(_license: ClientLicense) {
+    return false;
 }
 
-export function isTrialLicense(license: ClientLicense) {
-    if (license.IsLicensed !== 'true') {
-        return false;
-    }
-
-    if (license.IsTrial === 'true') {
-        return true;
-    }
-
-    // Currently all trial licenses are issued with a 30 day, 8 hours duration.
-    // We're using this logic to detect a trial license until we add the right field in the license itself.
-    const timeDiff = parseInt(license.ExpiresAt, 10) - parseInt(license.StartsAt, 10);
-
-    // 30 days + 8 hours
-    const trialLicenseDuration = (1000 * 60 * 60 * 24 * 30) + (1000 * 60 * 60 * 8);
-
-    return timeDiff === trialLicenseDuration;
+export function isTrialLicense(_license: ClientLicense) {
+    return false;
 }
+
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 export function isCloudLicense(license: ClientLicense) {
     return license?.Cloud === 'true';
@@ -121,26 +85,16 @@ export function isEnterpriseOrCloudOrSKUStarterFree(license: ClientLicense, subs
     return isCloudStarterFree || isSelfHostedStarter || isStarterSKULicense;
 }
 
-export function isMinimumProfessionalLicense(license: ClientLicense): boolean {
-    if (!license) {
-        return false;
-    }
-
-    return getLicenseTier(license.SkuShortName) >= getLicenseTier(LicenseSkus.Professional);
+/* eslint-disable @typescript-eslint/no-unused-vars -- the license argument is intentionally ignored; callers keep their signatures */
+export function isMinimumProfessionalLicense(_license?: ClientLicense): boolean {
+    return true;
 }
 
-export function isMinimumEnterpriseLicense(license: ClientLicense): boolean {
-    if (!license) {
-        return false;
-    }
-
-    return getLicenseTier(license.SkuShortName) >= getLicenseTier(LicenseSkus.Enterprise);
+export function isMinimumEnterpriseLicense(_license?: ClientLicense): boolean {
+    return true;
 }
 
-export function isMinimumEnterpriseAdvancedLicense(license?: ClientLicense): boolean {
-    if (!license) {
-        return false;
-    }
-
-    return getLicenseTier(license.SkuShortName) >= getLicenseTier(LicenseSkus.EnterpriseAdvanced);
+export function isMinimumEnterpriseAdvancedLicense(_license?: ClientLicense): boolean {
+    return true;
 }
+/* eslint-enable @typescript-eslint/no-unused-vars */
