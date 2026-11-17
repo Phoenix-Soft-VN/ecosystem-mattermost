@@ -164,7 +164,7 @@ describe('Selectors.General', () => {
                     },
                 },
             },
-        } as unknown as GlobalState)).toEqual(true);
+        } as unknown as GlobalState)).toEqual(false);
 
         expect(Selectors.canUploadFilesOnMobile({
             entities: {
@@ -179,7 +179,7 @@ describe('Selectors.General', () => {
                     },
                 },
             },
-        } as unknown as GlobalState)).toEqual(true);
+        } as unknown as GlobalState)).toEqual(false);
     });
 
     it('canDownloadFilesOnMobile', () => {
@@ -236,7 +236,7 @@ describe('Selectors.General', () => {
                     },
                 },
             },
-        } as unknown as GlobalState)).toEqual(true);
+        } as unknown as GlobalState)).toEqual(false);
 
         expect(Selectors.canDownloadFilesOnMobile({
             entities: {
@@ -250,7 +250,7 @@ describe('Selectors.General', () => {
                     },
                 },
             },
-        } as unknown as GlobalState)).toEqual(true);
+        } as unknown as GlobalState)).toEqual(false);
     });
 
     describe('getAutolinkedUrlSchemes', () => {

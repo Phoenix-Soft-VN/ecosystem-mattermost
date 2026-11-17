@@ -115,9 +115,56 @@ export const getPasswordConfig: (state: GlobalState) => PasswordConfig = createS
     },
 );
 
-export function getLicense(state: GlobalState): ClientLicense {
-    return state.entities.general.license;
-}
+// Match model.NewPermissiveLicense for the Phoenix experimental build. Keep the
+// source object untouched and memoize the overlay for useSelector consumers.
+export const getLicense: (state: GlobalState) => ClientLicense = createSelector(
+    'getLicense',
+    (state: GlobalState) => state.entities.general.license,
+    (license: ClientLicense | undefined): ClientLicense => ({
+        ...license,
+        Id: 'phoenixlicenseexperiment01',
+        Name: 'Phoenix Experimental',
+        Email: license?.Email ?? '',
+        Company: license?.Company ?? '',
+        IsLicensed: 'true',
+        SkuName: 'Enterprise Advanced (Phoenix Experimental)',
+        SkuShortName: General.SKUEnterpriseAdvanced,
+        Users: '1000000',
+        IssuedAt: '1',
+        StartsAt: '1',
+        ExpiresAt: '4102444800000',
+        IsTrial: 'false',
+        IsNonProduction: 'true',
+        IsGovSku: license?.IsGovSku ?? 'false',
+        AddOns: license?.AddOns ?? '',
+        Cloud: license?.Cloud ?? 'false',
+        LDAP: 'true',
+        LDAPGroups: 'true',
+        MFA: 'true',
+        SAML: 'true',
+        Cluster: 'true',
+        Metrics: 'true',
+        GoogleOAuth: 'true',
+        Office365OAuth: 'true',
+        OpenId: 'true',
+        Compliance: 'true',
+        MHPNS: 'true',
+        Announcement: 'true',
+        Elasticsearch: 'true',
+        DataRetention: 'true',
+        IDLoadedPushNotifications: 'true',
+        EmailNotificationContents: 'true',
+        MessageExport: 'true',
+        CustomPermissionsSchemes: 'true',
+        GuestAccounts: 'true',
+        GuestAccountsPermissions: 'true',
+        CustomTermsOfService: 'true',
+        LockTeammateNameDisplay: 'true',
+        SharedChannels: 'true',
+        RemoteClusterService: 'true',
+        OutgoingOAuthConnections: 'true',
+    }),
+);
 
 export function isFreeEdition(state: GlobalState): boolean {
     const license = getLicense(state);
