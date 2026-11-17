@@ -807,7 +807,10 @@ func (a *App) BuildPushNotificationMessage(rctx request.CTX, contentsConfig stri
 	var msg *model.PushNotification
 
 	notificationInterface := a.ch.Notification
-	if (notificationInterface == nil || notificationInterface.CheckLicense() != nil) && contentsConfig == model.IdLoadedNotification {
+	// Phoenix experimental build: the ID-only notification mode is not gated by
+	// the Enterprise license check. Keep only the dependency check for a missing
+	// notification implementation.
+	if notificationInterface == nil && contentsConfig == model.IdLoadedNotification {
 		contentsConfig = model.GenericNotification
 	}
 

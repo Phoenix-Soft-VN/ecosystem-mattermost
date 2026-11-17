@@ -15,9 +15,8 @@ var ErrLicenseRequired = errors.New("license_error: an Enterprise license is req
 // LicenseProvider is a function that returns the current license.
 type LicenseProvider func() *model.License
 
-// LicenseCheckHook enforces license requirements for property operations on
-// specific groups. Operations on groups without a license requirement pass
-// through without checks.
+// LicenseCheckHook retains its API for the Phoenix experiment but permits
+// property operations regardless of license. Other property hooks still apply.
 type LicenseCheckHook struct {
 	BasePropertyHook
 	licenseProvider LicenseProvider
@@ -26,8 +25,7 @@ type LicenseCheckHook struct {
 
 var _ PropertyHook = (*LicenseCheckHook)(nil)
 
-// NewLicenseCheckHook creates a hook that requires an Enterprise license for
-// all field and value operations on the given property groups.
+// NewLicenseCheckHook retains the upstream constructor for easy restoration.
 func NewLicenseCheckHook(licenseProvider LicenseProvider, managedGroupIDs ...string) *LicenseCheckHook {
 	ids := make(map[string]struct{}, len(managedGroupIDs))
 	for _, id := range managedGroupIDs {
@@ -39,16 +37,10 @@ func NewLicenseCheckHook(licenseProvider LicenseProvider, managedGroupIDs ...str
 	}
 }
 
-// requireLicense returns ErrLicenseRequired when groupID is in the managed set
-// and no Enterprise license is active. Unmanaged groups and licensed calls
-// return nil.
+// requireLicense is disabled for the Phoenix experiment.
 func (h *LicenseCheckHook) requireLicense(groupID string) error {
-	if _, managed := h.managedGroupIDs[groupID]; !managed {
-		return nil
-	}
-	if !model.MinimumEnterpriseLicense(h.licenseProvider()) {
-		return ErrLicenseRequired
-	}
+	// Phoenix experimental build: property groups remain governed by their
+	// normal permission checks, without an Enterprise license gate.
 	return nil
 }
 

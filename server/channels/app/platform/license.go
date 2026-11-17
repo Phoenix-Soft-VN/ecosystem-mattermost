@@ -44,7 +44,12 @@ func (ps *PlatformService) SetLicenseManager(impl einterfaces.LicenseInterface) 
 }
 
 func (ps *PlatformService) License() *model.License {
-	return ps.licenseValue.Load()
+	// Phoenix experiment: installed, missing or removed licenses have the same
+	// effective entitlements. Restore this file to resume signed-license gating.
+	if license := ps.licenseValue.Load(); license != nil {
+		return license
+	}
+	return model.NewPermissiveLicense()
 }
 
 func (ps *PlatformService) LoadLicense() {
@@ -255,6 +260,9 @@ func (ps *PlatformService) SaveLicense(licenseBytes []byte) (*model.License, *mo
 }
 
 func (ps *PlatformService) SetLicense(license *model.License) bool {
+	// Normalize listener inputs as well as getters: otherwise license changes
+	// could disable workers, plugins or SQL-store features behind their backs.
+	license = model.NewPermissiveLicense()
 	oldLicense := ps.licenseValue.Load()
 
 	defer func() {
@@ -307,14 +315,14 @@ func (ps *PlatformService) ValidateAndSetLicenseBytes(b []byte) error {
 }
 
 func (ps *PlatformService) SetClientLicense(m map[string]string) {
-	ps.clientLicenseValue.Store(m)
+	ps.clientLicenseValue.Store(utils.GetClientLicense(ps.License()))
 }
 
 func (ps *PlatformService) ClientLicense() map[string]string {
 	if clientLicense, _ := ps.clientLicenseValue.Load().(map[string]string); clientLicense != nil {
 		return clientLicense
 	}
-	return map[string]string{"IsLicensed": "false"}
+	return utils.GetClientLicense(ps.License())
 }
 
 func (ps *PlatformService) RemoveLicense() *model.AppError {

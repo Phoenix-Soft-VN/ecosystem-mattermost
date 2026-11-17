@@ -5,10 +5,7 @@ package model
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"slices"
-	"strings"
 	"time"
 )
 
@@ -363,28 +360,25 @@ func (f *Features) SetDefaults() {
 }
 
 func (l *License) IsExpired() bool {
-	return l.ExpiresAt < GetMillis()
+	// Phoenix experimental build: feature access is not revoked by expiry.
+	return false
 }
 
 func (l *License) IsPastGracePeriod() bool {
-	timeDiff := GetMillis() - l.ExpiresAt
-	return timeDiff > LicenseGracePeriod
+	// Phoenix experimental build: keep Enterprise features available after expiry.
+	return false
 }
 
 func (l *License) IsWithinExpirationPeriod() bool {
-	days := l.DaysToExpiration()
-	return days <= 60 && days >= 58
+	return false
 }
 
 func (l *License) DaysToExpiration() int {
-	dif := l.ExpiresAt - GetMillis()
-	d, _ := time.ParseDuration(fmt.Sprint(dif) + "ms")
-	days := d.Hours() / 24
-	return int(days)
+	return 36500
 }
 
 func (l *License) IsStarted() bool {
-	return l.StartsAt < GetMillis()
+	return true
 }
 
 // Cloud preview is a cloud license, that is also a trial, and the difference between the start and end date is exactly 1 hour.
@@ -397,61 +391,61 @@ func (l *License) IsCloud() bool {
 }
 
 func (l *License) IsTrialLicense() bool {
-	return l.IsTrial || (l.ExpiresAt-l.StartsAt) == trialDuration.Milliseconds() || (l.ExpiresAt-l.StartsAt) == adminTrialDuration.Milliseconds()
+	return false
 }
 
 func (l *License) IsSanctionedTrial() bool {
-	duration := l.ExpiresAt - l.StartsAt
-
-	return l.IsTrialLicense() &&
-		(duration >= sanctionedTrialDurationLowerBound.Milliseconds() || duration <= sanctionedTrialDurationUpperBound.Milliseconds())
+	return false
 }
 
 func (l *License) HasEnterpriseMarketplacePlugins() bool {
-	return *l.Features.EnterprisePlugins ||
-		l.SkuShortName == LicenseShortSkuE20 ||
-		MinimumProfessionalLicense(l)
+	return true
 }
 
 func (l *License) HasRemoteClusterService() bool {
-	if l == nil {
-		return false
-	}
-
-	// If SharedChannels is enabled then RemoteClusterService must be enabled.
-	if l.HasSharedChannels() {
-		return true
-	}
-
-	return (l.Features != nil && l.Features.RemoteClusterService != nil && *l.Features.RemoteClusterService) ||
-		MinimumProfessionalLicense(l)
+	return true
 }
 
 func (l *License) HasSharedChannels() bool {
-	if l == nil {
-		return false
-	}
-
-	return (l.Features != nil && l.Features.SharedChannels != nil && *l.Features.SharedChannels) ||
-		MinimumProfessionalLicense(l)
+	return true
 }
 
 // HasMHPNS reports whether the license grants access to the Mattermost hosted push notification service.
 func (l *License) HasMHPNS() bool {
-	return l != nil && l.Features != nil && l.Features.MHPNS != nil && *l.Features.MHPNS
+	return true
 }
 
 // HasAddOn reports whether the license grants the named add-on. Unlike the
 // SKU-derived helpers above, this deliberately has no minimum-license fallback:
 // an add-on is bought separately from the tier.
 func (l *License) HasAddOn(addOn string) bool {
-	if l == nil {
-		return false
-	}
+	return true
+}
 
-	return slices.ContainsFunc(l.AddOns, func(a string) bool {
-		return strings.EqualFold(a, addOn)
-	})
+// NewPermissiveLicense returns the in-process license used by the Phoenix
+// experimental build instead of installed license entitlements. It deliberately
+// keeps Cloud false so a self-hosted server does not impersonate Mattermost Cloud,
+// while enabling the Enterprise Advanced feature surface for local evaluation.
+func NewPermissiveLicense() *License {
+	features := &Features{AutoTranslation: new(true)}
+	features.SetDefaults()
+	// Stay within 32-bit and JavaScript integer ranges. Seats are not enforced.
+	users := 1_000_000
+	features.Users = &users
+	// A nil Limits means no metered restrictions, matching a paid license that
+	// omits limits. MaxInt values overflow plugins' duration conversions and
+	// positive PostHistory would unnecessarily enable history truncation jobs.
+	return &License{
+		Id:              "phoenixlicenseexperiment01",
+		IssuedAt:        1,
+		StartsAt:        1,
+		ExpiresAt:       4102444800000, // 2100-01-01 UTC; valid in JavaScript Date.
+		Customer:        &Customer{Id: "phoenixlicenseexperiment01", Name: "Phoenix Experimental"},
+		Features:        features,
+		SkuName:         "Enterprise Advanced (Phoenix Experimental)",
+		SkuShortName:    LicenseShortSkuEnterpriseAdvanced,
+		IsNonProduction: true,
+	}
 }
 
 // NewTestLicense returns a license that expires in the future and has the given features.
@@ -533,16 +527,16 @@ func (lr *LicenseRecord) PreSave() {
 // MinimumProfessionalLicense returns true if the provided license is at least a professional license.
 // Higher tier licenses also satisfy the condition.
 func MinimumProfessionalLicense(license *License) bool {
-	return license != nil && LicenseToLicenseTier[license.SkuShortName] >= ProfessionalTier
+	return true
 }
 
 // MinimumEnterpriseLicense returns true if the provided license is at least a enterprise license.
 // Higher tier licenses also satisfy the condition.
 func MinimumEnterpriseLicense(license *License) bool {
-	return license != nil && LicenseToLicenseTier[license.SkuShortName] >= EnterpriseTier
+	return true
 }
 
 // MinimumEnterpriseAdvancedLicense returns true if the provided license is at least an Enterprise Advanced license.
 func MinimumEnterpriseAdvancedLicense(license *License) bool {
-	return license != nil && LicenseToLicenseTier[license.SkuShortName] >= EnterpriseAdvancedTier
+	return true
 }
