@@ -1,4 +1,4 @@
-// Copyright (c) Phoenix-Soft-VN. Licensed under the same terms as the surrounding fork (see LICENSE.txt).
+// Copyright (c) Phoenix-Soft-VN. See LICENSE.txt.
 
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {UserTypes} from 'mattermost-redux/action_types';
@@ -55,6 +55,11 @@ function safeHttps(url: string | undefined): string | undefined {
     } catch {
         return undefined;
     }
+}
+
+function initials(value: string | undefined): string {
+    const words = (value || 'Phoenix').trim().split(/\s+/).filter(Boolean);
+    return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'P';
 }
 
 type Props = {children: React.ReactNode};
@@ -193,6 +198,8 @@ export default function PhoenixShell({children}: Props) {
     const logo = resolved === 'dark' ? snapshot.tenant?.logoDarkUrl || snapshot.tenant?.logoLightUrl : snapshot.tenant?.logoLightUrl || snapshot.tenant?.logoDarkUrl;
     const apps: AppTile[] = (nav?.apps ?? []).filter((a) => a.state === 'ready' && safeHttps(a.launchUrl));
     const footerParties = [snapshot.footer.operator, snapshot.footer.tenant].filter(Boolean);
+    const tenantName = snapshot.tenant?.displayName || 'Phoenix Soft';
+    const accountName = snapshot.account?.displayName || 'Tài khoản';
 
     return (
         <div className={`phoenix-shell phoenix-shell--${resolved}`}>
@@ -201,18 +208,22 @@ export default function PhoenixShell({children}: Props) {
                 data-testid='phoenix-header'
             >
                 <div className='phoenix-shell__brand'>
-                    {safeHttps(logo || undefined) && (
+                    {safeHttps(logo || undefined) ? (
                         <img
                             className='phoenix-shell__logo'
                             src={logo as string}
-                            alt=''
+                            alt={tenantName}
                         />
-                    )}
-                    <span className='phoenix-shell__tenant'>{snapshot.tenant?.displayName}</span>
+                    ) : <span className='phoenix-shell__monogram' aria-hidden='true'>{initials(tenantName)}</span>}
+                    <span className='phoenix-shell__brand-text'>
+                        <span className='phoenix-shell__tenant' title={tenantName}>{tenantName}</span>
+                        <span className='phoenix-shell__app-name'>{'Chat'}</span>
+                    </span>
                 </div>
                 <div className='phoenix-shell__controls'>
                     <div className='phoenix-shell__launcher'>
                         <button
+                            className='phoenix-shell__launcher-button'
                             type='button'
                             aria-haspopup='true'
                             aria-expanded={menuOpen}
@@ -253,10 +264,14 @@ export default function PhoenixShell({children}: Props) {
                             >{m.label}</button>
                         ))}
                     </div>
+                    <span className='phoenix-shell__divider' aria-hidden='true'/>
                     <div className='phoenix-shell__account'>
-                        {safeHttps(snapshot.account?.avatarUrl || undefined) && <img className='phoenix-shell__avatar' src={snapshot.account!.avatarUrl!} alt=''/>}
-                        <span>{snapshot.account?.displayName}</span>
-                        {safeHttps(logoutUrl || undefined) && <a href={logoutUrl as string}>{'Đăng xuất'}</a>}
+                        {safeHttps(snapshot.account?.avatarUrl || undefined) ? <img className='phoenix-shell__avatar' src={snapshot.account!.avatarUrl!} alt={accountName}/> : <span className='phoenix-shell__account-monogram' aria-hidden='true'>{initials(accountName)}</span>}
+                        <span className='phoenix-shell__account-text'>
+                            <span className='phoenix-shell__account-name'>{accountName}</span>
+                            <span className='phoenix-shell__account-app'>{'Chat'}</span>
+                        </span>
+                        {safeHttps(logoutUrl || undefined) && <a className='phoenix-shell__logout' href={logoutUrl as string}>{'Đăng xuất'}</a>}
                     </div>
                 </div>
             </header>

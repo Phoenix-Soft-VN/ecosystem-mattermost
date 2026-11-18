@@ -3,13 +3,13 @@
 
 .phoenix-shell {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
     width: 100%;
     height: 100vh;
     height: 100dvh;
     background: var(--phoenix-color-surface, #fff);
     color: var(--phoenix-color-text, #1b1d20);
     font-size: 14px;
+    grid-template-rows: auto minmax(0, 1fr) auto;
 
     &--loading,
     &--message {
@@ -29,15 +29,16 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
-        padding: 6px 16px;
+        padding: 0 20px;
         border-color: var(--phoenix-color-border, #d9dce1);
         background: var(--phoenix-color-surface, #fff);
+        gap: 12px;
     }
 
     &__header {
+        min-height: 72px;
         border-bottom: 1px solid var(--phoenix-color-border, #d9dce1);
-        min-height: 44px;
+        box-shadow: 0 1px 8px rgb(15 23 42 / 4%);
     }
 
     &__footer {
@@ -47,10 +48,10 @@
     }
 
     &__main {
+        position: relative;
+        overflow: hidden;
         // The channel UI sizes itself against this row; it never overflows into header/footer.
         min-height: 0;
-        overflow: hidden;
-        position: relative;
 
         > * {
             height: 100%;
@@ -65,16 +66,61 @@
         gap: 8px;
     }
 
+    &__brand {
+        min-width: 0;
+        gap: 10px;
+    }
+
+    &__brand-text,
+    &__account-text {
+        display: inline-flex;
+        min-width: 0;
+        flex-direction: column;
+        justify-content: center;
+        line-height: 1.2;
+    }
+
+    &__tenant,
+    &__account-name {
+        overflow: hidden;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__app-name,
+    &__account-app {
+        color: var(--phoenix-color-muted, #687386);
+        font-size: 12px;
+    }
+
+    &__monogram,
+    &__account-monogram {
+        display: inline-flex;
+        width: 40px;
+        height: 40px;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        background: var(--phoenix-color-primary, #2563eb);
+        color: var(--phoenix-color-primary-foreground, #fff);
+        font-weight: 700;
+        letter-spacing: .02em;
+    }
+
     &__avatar {
-        width: 28px;
-        height: 28px;
-        object-fit: cover;
+        width: 40px;
+        height: 40px;
         border-radius: 50%;
+        object-fit: cover;
     }
 
     &__logo {
-        max-height: 28px;
-        max-width: 120px;
+        width: 40px;
+        max-width: 180px;
+        height: 40px;
+        object-fit: contain;
     }
 
     &__launcher {
@@ -84,14 +130,16 @@
     &__menu {
         position: absolute;
         z-index: 1001;
-        right: 0;
         top: calc(100% + 4px);
+        right: 0;
         min-width: 180px;
-        margin: 0;
         padding: 6px 0;
-        list-style: none;
         border: 1px solid var(--phoenix-color-border, #d9dce1);
+        border-radius: 10px;
+        margin: 0;
         background: var(--phoenix-color-surface, #fff);
+        box-shadow: 0 10px 32px rgb(15 23 42 / 16%);
+        list-style: none;
 
         a {
             display: block;
@@ -101,17 +149,60 @@
 
     &__modes {
         display: inline-flex;
+        align-items: center;
+        padding: 3px;
+        border: 1px solid var(--phoenix-color-border, #d9dce1);
+        border-radius: 9px;
+        gap: 2px;
+
+        button {
+            min-height: 32px;
+            padding: 4px 8px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font: inherit;
+        }
 
         button[aria-checked='true'] {
+            background: var(--phoenix-color-surface-muted, #eef2ff);
+            color: var(--phoenix-color-primary, #1c58d9);
             font-weight: 600;
-            text-decoration: underline;
+        }
+    }
+
+    &__divider {
+        width: 1px;
+        height: 32px;
+        margin: 0 4px;
+        background: var(--phoenix-color-border, #d9dce1);
+    }
+
+    &__account {
+        gap: 9px;
+    }
+
+    &__logout {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: 7px;
+        color: inherit;
+        text-decoration: none;
+
+        &:hover,
+        &:focus-visible {
+            background: var(--phoenix-color-surface-muted, #eef2ff);
         }
     }
 
     &__header button,
     &__header a,
     &__footer a {
-        min-height: 32px;
+        min-height: 44px;
         padding: 4px 8px;
         color: inherit;
 
@@ -122,24 +213,38 @@
     }
 
     &__header button {
+        border: 1px solid var(--phoenix-color-border, #d9dce1);
+        border-radius: 4px;
         // Browser ButtonFace stays light in dark mode. Paint these controls
         // with the authoritative shell surface instead of the UA palette.
         background: transparent;
-        border: 1px solid var(--phoenix-color-border, #d9dce1);
-        border-radius: 4px;
-        font: inherit;
         cursor: pointer;
+        font: inherit;
     }
 
     @media (max-width: 640px) {
         &__header {
+            min-height: 64px;
             flex-wrap: wrap;
-            padding: 4px 8px;
+            padding: 6px 10px;
         }
 
         &__controls {
             flex-wrap: wrap;
             gap: 4px;
+        }
+
+        &__logo,
+        &__monogram,
+        &__avatar,
+        &__account-monogram {
+            width: 32px;
+            height: 32px;
+        }
+
+        &__account-app,
+        &__modes {
+            display: none;
         }
 
         &__footer {

@@ -63,6 +63,18 @@ test('Gateway dark selection persists and applies after reload', async () => {
     expect(screen.getByRole('radio', {name: 'Tối'})).toHaveAttribute('aria-checked', 'true');
 });
 
+test('Portal-like header shows brand app and account grouping', async () => {
+    render(<PhoenixShell><div>{'Chat content'}</div></PhoenixShell>);
+    await screen.findByTestId('phoenix-header');
+
+    expect(screen.getByTitle('Tenant A')).toBeInTheDocument();
+    expect(screen.getAllByText('Chat')).toHaveLength(2);
+    expect(screen.getByText('A1')).toBeInTheDocument();
+    expect(screen.getByRole('link', {name: 'Đăng xuất'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'Ứng dụng'})).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', {name: 'Giao diện'})).toBeInTheDocument();
+});
+
 // Break: rendering unauthorized launcher targets, or leaving prior-user content after revoke/outage.
 test('launcher uses ready navigation and authority failure removes sensitive content', async () => {
     const view = render(<PhoenixShell><div>{'Sensitive chat A'}</div></PhoenixShell>);
