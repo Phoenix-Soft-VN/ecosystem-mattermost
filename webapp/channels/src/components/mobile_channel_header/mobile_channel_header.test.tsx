@@ -3,6 +3,8 @@
 
 import React from 'react';
 
+import {HeaderSlotsProvider, HeaderSlotTarget} from 'components/phoenix_shell/header_slots';
+
 import {renderWithContext, screen} from 'tests/react_testing_utils';
 import {TestHelper} from 'utils/test_helper';
 
@@ -99,6 +101,36 @@ describe('components/ChannelHeaderMobile/ChannelHeaderMobile', () => {
 
             const menuItem = screen.getByText('Drafts');
             expect(menuItem).toBeInTheDocument();
+        });
+
+        // Break: leaving .navbar-fixed-top row in-place when HeaderSlotsProvider is active.
+        test('U04 portals mobile identity and utilities into header slots when unified shell is active', () => {
+            const {container} = renderWithContext(
+                <HeaderSlotsProvider>
+                    <header data-testid='phoenix-host'>
+                        <HeaderSlotTarget name='channel'/>
+                        <HeaderSlotTarget name='utilities'/>
+                    </header>
+                    <div
+                        className='inner-wrap'
+                        data-testid='wrapper'
+                    >
+                        <ChannelHeaderMobile
+                            channel={channel}
+                            isMobileView={true}
+                            user={user}
+                            actions={actions}
+                        />
+                    </div>
+                </HeaderSlotsProvider>,
+            );
+
+            expect(container.querySelector('.navbar-fixed-top')).toBeNull();
+            expect(container.querySelector('[data-header-slot="channel"] .phoenix-mobile-channel')).not.toBeNull();
+            expect(container.querySelector('[data-header-slot="utilities"] .phoenix-mobile-utilities')).not.toBeNull();
+            expect(screen.getByText('Toggle sidebar')).toBeInTheDocument();
+            expect(screen.getByLabelText('Search')).toBeInTheDocument();
+            expect(screen.getByText('Toggle right sidebar')).toBeInTheDocument();
         });
     });
 });

@@ -125,6 +125,16 @@ describe('components/Root', () => {
         expect(view.getByTestId('phoenix-boundary')).toBeInTheDocument();
     });
 
+    // Break: omitting PhoenixShell boundary on popout routes or failing to mount the root route wrapper.
+    test('U04 preserves Phoenix boundary when rendering popout route', () => {
+        const props = {
+            ...baseProps,
+            location: {pathname: '/_popout/channel/team-a/channels/general'} as RouteComponentProps['location'],
+        };
+        const view = renderWithContext(<Root {...props}/>);
+        expect(view.getByTestId('phoenix-boundary')).toBeInTheDocument();
+    });
+
     test('should load config and license on mount and redirect to sign-up page', async () => {
         const props = {
             ...baseProps,

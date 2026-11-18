@@ -4,6 +4,7 @@
 import React from 'react';
 
 import GlobalHeader from 'components/global_header/global_header';
+import {HeaderSlotsProvider, HeaderSlotTarget} from 'components/phoenix_shell/header_slots';
 
 import {renderWithContext, screen} from 'tests/react_testing_utils';
 import * as productUtils from 'utils/products';
@@ -53,6 +54,25 @@ describe('components/global/global_header', () => {
 
             // productId is passed to both CenterControls and RightControls
             expect(screen.getAllByText('product_id')).toHaveLength(2);
+        });
+
+        // Break: rendering #global-header banner alongside PhoenixShell instead of portaling into left/utilities slots.
+        test('U01 portals controls into left and utilities slots without rendering a duplicate banner', () => {
+            const {container} = renderWithContext(
+                <HeaderSlotsProvider>
+                    <header data-testid='host-header'>
+                        <HeaderSlotTarget name='left'/>
+                        <HeaderSlotTarget name='utilities'/>
+                    </header>
+                    <GlobalHeader/>
+                </HeaderSlotsProvider>,
+            );
+
+            expect(container.querySelector('#global-header')).toBeNull();
+            expect(screen.getAllByRole('banner')).toHaveLength(1);
+            expect(container.querySelector('[data-header-slot="left"] #mock-left-controls')).not.toBeNull();
+            expect(container.querySelector('[data-header-slot="utilities"] #mock-center-controls')).not.toBeNull();
+            expect(container.querySelector('[data-header-slot="utilities"] #mock-right-controls')).not.toBeNull();
         });
     });
 });

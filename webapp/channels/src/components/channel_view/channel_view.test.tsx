@@ -3,6 +3,8 @@
 
 import React from 'react';
 
+import {HeaderSlotsProvider, HeaderSlotTarget} from 'components/phoenix_shell/header_slots';
+
 import {renderWithContext, screen} from 'tests/react_testing_utils';
 
 import ChannelView from './channel_view';
@@ -131,5 +133,20 @@ describe('components/channel_view', () => {
             />,
         );
         expect(baseProps.fetchIsRestrictedDM).toHaveBeenCalledTimes(1);
+    });
+
+    // Break: mounting ChannelHeader inside #app-content instead of portaling into the channel slot when active.
+    it('U01 portals channel header into active header slot', () => {
+        const {container} = renderWithContext(
+            <HeaderSlotsProvider>
+                <header>
+                    <HeaderSlotTarget name='channel'/>
+                </header>
+                <ChannelView {...baseProps}/>
+            </HeaderSlotsProvider>,
+        );
+
+        expect(container.querySelector('[data-header-slot="channel"]')).not.toBeNull();
+        expect(container.querySelector('#app-content #channel-header')).toBeNull();
     });
 });

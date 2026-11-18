@@ -77,7 +77,7 @@ export function HeaderSlotTarget({name}: {name: HeaderSlot}): JSX.Element {
     const hostRef = useRef<HTMLDivElement | null>(null);
 
     const setHost = useCallback((host: HTMLDivElement | null) => {
-        if (!ctx || !ctx.active) {
+        if (!ctx?.active) {
             return;
         }
         const el = ctx.containers[name];
@@ -90,7 +90,7 @@ export function HeaderSlotTarget({name}: {name: HeaderSlot}): JSX.Element {
         } else if (prev && el.parentNode === prev) {
             prev.removeChild(el);
         }
-    }, [ctx, name]);
+    }, [ctx?.active, ctx?.containers, name]);
 
     return (
         <div
@@ -112,14 +112,16 @@ export function HeaderSlotContent({
 }): JSX.Element | null {
     const ctx = useContext(HeaderSlotsContext);
     const activeSlot = useContext(ActiveSlotContext);
-    const isNestedSameSlot = Boolean(ctx?.active && activeSlot === name);
+    const isActive = Boolean(ctx?.active);
+    const registerContent = ctx?.registerContent;
+    const isNestedSameSlot = Boolean(isActive && activeSlot === name);
 
     useLayoutEffect(() => {
-        if (!ctx?.active || isNestedSameSlot) {
+        if (!isActive || !registerContent || isNestedSameSlot) {
             return undefined;
         }
-        return ctx.registerContent(name);
-    }, [ctx, name, isNestedSameSlot]);
+        return registerContent(name);
+    }, [isActive, registerContent, name, isNestedSameSlot]);
 
     if (!ctx || !ctx.active) {
         return <>{fallback !== undefined ? fallback : children}</>;
@@ -147,11 +149,13 @@ export function useHasSlotContent(name: HeaderSlot): boolean {
 
 export function useMobileHeaderSlot(register = false): boolean {
     const ctx = useContext(HeaderSlotsContext);
+    const isActive = Boolean(ctx?.active);
+    const registerMobileChannel = ctx?.registerMobileChannel;
     useLayoutEffect(() => {
-        if (!register || !ctx?.active) {
+        if (!register || !isActive || !registerMobileChannel) {
             return undefined;
         }
-        return ctx.registerMobileChannel();
-    }, [ctx, register]);
-    return Boolean(ctx?.active && ctx.mobileChannelCount > 0);
+        return registerMobileChannel();
+    }, [register, isActive, registerMobileChannel]);
+    return Boolean(isActive && (ctx?.mobileChannelCount ?? 0) > 0);
 }

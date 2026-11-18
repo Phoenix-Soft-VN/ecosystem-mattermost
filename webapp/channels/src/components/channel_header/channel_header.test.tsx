@@ -6,6 +6,8 @@ import React from 'react';
 import type {ChannelType} from '@mattermost/types/channels';
 import type {UserCustomStatus} from '@mattermost/types/users';
 
+import {HeaderSlotsProvider, HeaderSlotTarget} from 'components/phoenix_shell/header_slots';
+
 import {renderWithContext} from 'tests/react_testing_utils';
 import Constants, {RHSStates} from 'utils/constants';
 import {TestHelper} from 'utils/test_helper';
@@ -363,5 +365,24 @@ describe('components/ChannelHeader', () => {
             <ChannelHeader {...props}/>,
         );
         expect(container).toMatchSnapshot();
+    });
+
+    // Break: keeping role="banner" when portaled into PhoenixShell header or failing to portal into the channel slot.
+    test('U01 portals into channel slot as a region without nested banner', () => {
+        const {container} = renderWithContext(
+            <HeaderSlotsProvider>
+                <header data-testid='phoenix-host'>
+                    <HeaderSlotTarget name='channel'/>
+                </header>
+                <main data-testid='main-host'>
+                    <ChannelHeader {...populatedProps}/>
+                </main>
+            </HeaderSlotsProvider>,
+        );
+
+        const slotChannelHeader = container.querySelector('[data-header-slot="channel"] #channel-header');
+        expect(slotChannelHeader).not.toBeNull();
+        expect(slotChannelHeader).toHaveAttribute('role', 'region');
+        expect(container.querySelector('[data-testid="main-host"] #channel-header')).toBeNull();
     });
 });
