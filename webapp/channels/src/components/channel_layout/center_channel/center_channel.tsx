@@ -8,6 +8,7 @@ import {Route, Switch, Redirect} from 'react-router-dom';
 import {makeAsyncComponent} from 'components/async_load';
 import ChannelIdentifierRouter from 'components/channel_layout/channel_identifier_router';
 import LoadingScreen from 'components/loading_screen';
+import {HeaderSlotContent} from 'components/phoenix_shell/header_slots';
 
 import {SCHEDULED_POST_URL_SUFFIX} from 'utils/constants';
 import {IDENTIFIER_PATH_PATTERN, ID_PATH_PATTERN, TEAM_NAME_PATH_PATTERN} from 'utils/path';
@@ -83,7 +84,11 @@ export default class CenterChannel extends React.PureComponent<Props, State> {
                     'move--left-small': this.props.rhsMenuOpen,
                 })}
             >
-                {isMobileView && <MobileChannelHeader/>}
+                {isMobileView && (
+                    <HeaderSlotContent name='channel'>
+                        <MobileChannelHeader/>
+                    </HeaderSlotContent>
+                )}
                 <div className='row main'>
                     <Switch>
                         <Route

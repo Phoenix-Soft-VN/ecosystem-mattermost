@@ -38,6 +38,18 @@ const RightControlsContainer = styled.div`
     > * + * {
         margin-left: 8px;
     }
+
+    .phoenix-shell__header & {
+        height: 44px;
+        flex: 0 0 auto;
+        flex-basis: auto;
+        min-width: 0;
+        gap: 4px;
+
+        > * + * {
+            margin-left: 0;
+        }
+    }
 `;
 
 const StyledCustomizeYourExperienceTour = styled.div`
@@ -60,6 +72,7 @@ const RightControls = ({productId = null}: Props): JSX.Element => {
     return (
         <RightControlsContainer
             id={'RightControlsContainer'}
+            className='global-header__right-controls'
         >
             <PlanUpgradeButton/>
             {isChannels(productId) ? (

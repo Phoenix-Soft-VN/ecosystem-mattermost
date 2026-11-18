@@ -6,13 +6,17 @@ import React from 'react';
 import type {MouseEvent, ReactNode, RefObject} from 'react';
 import {defineMessages, FormattedMessage, injectIntl} from 'react-intl';
 import type {WrappedComponentProps} from 'react-intl';
+import {useSelector} from 'react-redux';
 
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
+
+import {getIsMobileView} from 'selectors/views/browser';
 
 import ChannelAttributeLabels from 'components/channel_attributes/channel_attribute_labels';
 import {ChannelLabelSurface} from 'components/common/hooks/useChannelLabels';
 import CustomStatusEmoji from 'components/custom_status/custom_status_emoji';
 import CustomStatusText from 'components/custom_status/custom_status_text';
+import {HeaderSlotContent, useHasHeaderSlots, useMobileHeaderSlot} from 'components/phoenix_shell/header_slots';
 import PopoutButton from 'components/popout_button';
 import Timestamp from 'components/timestamp';
 import Tag from 'components/widgets/tag/tag';
@@ -28,6 +32,8 @@ import {
 } from 'utils/constants';
 import {canPopout, getPopoutChannelTitle, isChannelPopoutWindow, popoutChannel} from 'utils/popouts/popout_windows';
 import {isEmptyObject} from 'utils/utils';
+
+import type {GlobalState} from 'types/store';
 
 import ChannelHeaderText from './channel_header_text';
 import ChannelHeaderTitle from './channel_header_title';
@@ -377,90 +383,118 @@ class ChannelHeader extends React.PureComponent<Props> {
         }
 
         return (
-            <div
-                id='channel-header'
-                aria-label={ariaLabelChannelHeader}
-                role='banner'
-                tabIndex={-1}
-                data-channelid={`${channel.id}`}
-                className='channel-header alt a11y__region'
-                data-a11y-sort-order='8'
-            >
-                <ChannelJoinRequestCountSync/>
-                <div className='flex-parent'>
-                    <div className='flex-child'>
-                        <div
-                            id='channelHeaderInfo'
-                            className='channel-header__info'
-                        >
-                            <div
-                                className='channel-header__title dropdown'
-                            >
-                                <ChannelHeaderTitle
-                                    dmUser={dmUser}
-                                    gmMembers={gmMembers}
-                                    remoteNames={this.props.remoteNames}
-                                />
+            <ChannelHeaderSlotAdapter
+                renderHeader={(inSlot) => (
+                    <div
+                        id='channel-header'
+                        aria-label={ariaLabelChannelHeader}
+                        role={inSlot ? 'region' : 'banner'}
+                        tabIndex={-1}
+                        data-channelid={`${channel.id}`}
+                        className='channel-header alt a11y__region'
+                        data-a11y-sort-order='8'
+                    >
+                        <ChannelJoinRequestCountSync/>
+                        <div className='flex-parent'>
+                            <div className='flex-child'>
                                 <div
-                                    className='channel-header__icons'
+                                    id='channelHeaderInfo'
+                                    className='channel-header__info'
                                 >
-                                    {muteTrigger}
-                                    {memberListButton}
-                                    {pinnedButton}
-                                    {this.props.isFileAttachmentsEnabled &&
-                                        <HeaderIconWrapper
-                                            buttonClass={channelFilesIconClass}
-                                            buttonId={'channelHeaderFilesButton'}
-                                            onClick={this.showChannelFiles}
-                                            tooltip={this.props.intl.formatMessage({id: 'channel_header.channelFiles', defaultMessage: 'Channel files'})}
-                                        >
-                                            {channelFilesIcon}
-                                        </HeaderIconWrapper>
-                                    }
-                                    <Pluggable
-                                        pluggableName='ChannelHeaderIcon'
-                                        channel={channel}
-                                        channelMember={channelMember!}
-                                    />
-                                    {!isDirect && !isGroup && (
-                                        <ChannelAttributeLabels
-                                            channelId={channel.id}
-                                            surface={[ChannelLabelSurface.INFO, ChannelLabelSurface.HEADER]}
+                                    <div
+                                        className='channel-header__title dropdown'
+                                    >
+                                        <ChannelHeaderTitle
+                                            dmUser={dmUser}
+                                            gmMembers={gmMembers}
+                                            remoteNames={this.props.remoteNames}
                                         />
-                                    )}
-                                </div>
-                                <div
-                                    id='channelHeaderDescription'
-                                    className='channel-header__description'
-                                >
-                                    {dmHeaderTextStatus}
-                                    {hasGuestsText}
-                                    {autotranslationMessage}
-                                    <ChannelHeaderText
-                                        teamId={team?.id}
-                                        channel={channel}
-                                        dmUser={dmUser}
-                                    />
+                                        <div
+                                            className='channel-header__icons'
+                                        >
+                                            {muteTrigger}
+                                            {memberListButton}
+                                            {pinnedButton}
+                                            {this.props.isFileAttachmentsEnabled &&
+                                                <HeaderIconWrapper
+                                                    buttonClass={channelFilesIconClass}
+                                                    buttonId={'channelHeaderFilesButton'}
+                                                    onClick={this.showChannelFiles}
+                                                    tooltip={this.props.intl.formatMessage({id: 'channel_header.channelFiles', defaultMessage: 'Channel files'})}
+                                                >
+                                                    {channelFilesIcon}
+                                                </HeaderIconWrapper>
+                                            }
+                                            <Pluggable
+                                                pluggableName='ChannelHeaderIcon'
+                                                channel={channel}
+                                                channelMember={channelMember!}
+                                            />
+                                            {!isDirect && !isGroup && (
+                                                <ChannelAttributeLabels
+                                                    channelId={channel.id}
+                                                    surface={[ChannelLabelSurface.INFO, ChannelLabelSurface.HEADER]}
+                                                />
+                                            )}
+                                        </div>
+                                        <div
+                                            id='channelHeaderDescription'
+                                            className='channel-header__description'
+                                        >
+                                            {dmHeaderTextStatus}
+                                            {hasGuestsText}
+                                            {autotranslationMessage}
+                                            <ChannelHeaderText
+                                                teamId={team?.id}
+                                                channel={channel}
+                                                dmUser={dmUser}
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
+                            <ChannelHeaderPlug
+                                channel={channel}
+                                channelMember={channelMember}
+                            />
+                            <CallButton/>
+                            {canPopout() && !isChannelPopoutWindow() && (
+                                <PopoutButton
+                                    className='channel-header__icon'
+                                    onClick={this.popoutChannelView}
+                                />
+                            )}
+                            <ChannelInfoButton channel={channel}/>
                         </div>
                     </div>
-                    <ChannelHeaderPlug
-                        channel={channel}
-                        channelMember={channelMember}
-                    />
-                    <CallButton/>
-                    {canPopout() && !isChannelPopoutWindow() && (
-                        <PopoutButton
-                            className='channel-header__icon'
-                            onClick={this.popoutChannelView}
-                        />
-                    )}
-                    <ChannelInfoButton channel={channel}/>
-                </div>
-            </div>
+                )}
+            />
         );
     }
+}
+
+function ChannelHeaderSlotAdapter({renderHeader}: {renderHeader: (inSlot: boolean) => React.ReactElement}) {
+    const hasSlots = useHasHeaderSlots();
+    const mobileSlotActive = useMobileHeaderSlot();
+    const isMobileView = useSelector((state: GlobalState) => Boolean(state?.views?.browser && getIsMobileView(state)));
+    const inSlot = hasSlots && !isChannelPopoutWindow();
+
+    if (inSlot && (isMobileView || mobileSlotActive)) {
+        return null;
+    }
+
+    if (!inSlot) {
+        return renderHeader(false);
+    }
+
+    return (
+        <HeaderSlotContent
+            name='channel'
+            fallback={renderHeader(false)}
+        >
+            {renderHeader(true)}
+        </HeaderSlotContent>
+    );
 }
 
 export default injectIntl(ChannelHeader);

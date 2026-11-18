@@ -8,6 +8,8 @@ import {FormattedMessage} from 'react-intl';
 import type {Channel} from '@mattermost/types/channels';
 import type {UserProfile} from '@mattermost/types/users';
 
+import {HeaderSlotContent, useHasHeaderSlots, useMobileHeaderSlot} from 'components/phoenix_shell/header_slots';
+
 import ChannelInfoButton from './channel_info_button';
 import CollapseLhsButton from './collapse_lhs_button';
 import CollapseRhsButton from './collapse_rhs_button';
@@ -92,7 +94,7 @@ export default class MobileChannelHeader extends React.PureComponent<Props> {
             );
         }
 
-        return (
+        const fallback = (
             <div className='row header'>
                 <div id='navbar_wrapper'>
                     <nav
@@ -126,5 +128,72 @@ export default class MobileChannelHeader extends React.PureComponent<Props> {
                 </div>
             </div>
         );
+
+        const channelIdentity = (
+            <div
+                id='navbar'
+                className='phoenix-mobile-channel'
+                role='navigation'
+            >
+                <CollapseLhsButton/>
+                <div className={classNames('navbar-brand', {GlobalThreads___title: inGlobalThreads})}>
+                    {heading}
+                </div>
+            </div>
+        );
+
+        const mobileUtilities = (
+            <div className='phoenix-mobile-utilities'>
+                {channel && (
+                    <ChannelInfoButton
+                        channel={channel}
+                    />
+                )}
+                {channel && (
+                    <MobileChannelHeaderPlugins
+                        channel={channel}
+                        isDropdown={false}
+                    />
+                )}
+                <ShowSearchButton/>
+                <CollapseRhsButton/>
+            </div>
+        );
+
+        return (
+            <MobileChannelHeaderSlotAdapter
+                channelIdentity={channelIdentity}
+                mobileUtilities={mobileUtilities}
+                fallback={fallback}
+            />
+        );
     }
+}
+
+function MobileChannelHeaderSlotAdapter({
+    channelIdentity,
+    mobileUtilities,
+    fallback,
+}: {
+    channelIdentity: React.ReactNode;
+    mobileUtilities: React.ReactNode;
+    fallback: React.ReactNode;
+}) {
+    const hasSlots = useHasHeaderSlots();
+    useMobileHeaderSlot(hasSlots);
+
+    if (!hasSlots) {
+        return <>{fallback}</>;
+    }
+
+    return (
+        <>
+            <HeaderSlotContent name='channel'>
+                {channelIdentity}
+            </HeaderSlotContent>
+            <HeaderSlotContent name='utilities'>
+                {mobileUtilities}
+            </HeaderSlotContent>
+        </>
+    );
 }

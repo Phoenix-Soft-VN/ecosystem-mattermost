@@ -42,6 +42,7 @@ import {isTextDroppableEvent} from 'utils/utils';
 import LuxonController from './luxon_controller';
 import PerformanceReporterController from './performance_reporter_controller';
 import PhoenixShell from 'components/phoenix_shell';
+import {HeaderSlotsProvider} from 'components/phoenix_shell/header_slots';
 import RootProvider from './root_provider';
 import RootRedirect from './root_redirect';
 
@@ -403,7 +404,11 @@ export default class Root extends React.PureComponent<Props, State> {
                     />
                     <Route
                         path={'/_popout'}
-                        component={PopoutController}
+                        render={(props) => (
+                            <HeaderSlotsProvider active={false}>
+                                <PopoutController {...props}/>
+                            </HeaderSlotsProvider>
+                        )}
                     />
                     <WithUserTheme>
                         {(this.props.showLaunchingWorkspace && !this.props.location.pathname.includes('/preparing-workspace') &&

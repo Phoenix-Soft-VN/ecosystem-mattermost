@@ -19,10 +19,22 @@ const LeftControlsContainer = styled.div`
     > * + * {
         margin-left: 12px;
     }
+
+    .phoenix-shell__header & {
+        height: 44px;
+        flex: 0 0 auto;
+        flex-basis: auto;
+        min-width: 0;
+        gap: 4px;
+
+        > * + * {
+            margin-left: 0;
+        }
+    }
 `;
 
 const LeftControls = (): JSX.Element => (
-    <LeftControlsContainer>
+    <LeftControlsContainer className='global-header__left-controls'>
         <ProductMenu/>
         {isDesktopApp() && <HistoryButtons/>}
     </LeftControlsContainer>

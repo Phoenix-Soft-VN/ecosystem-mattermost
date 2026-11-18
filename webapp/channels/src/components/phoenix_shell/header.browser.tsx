@@ -1,45 +1,69 @@
 // Copyright (c) Phoenix-Soft-VN. See LICENSE.txt.
 
-/* eslint-disable formatjs/no-literal-string-in-jsx -- fixture content, not product copy */
+/* eslint-disable formatjs/no-literal-string-in-jsx, react/no-multi-comp -- fixture content, not product copy */
 
-// Browser entry of the header fixture (see header.browser.cjs). It renders the real PhoenixShell
-// and the real client; only the network boundary is replaced by an in-page Gateway double.
+// Browser entry of the header fixture (see header.browser.cjs). It renders the real PhoenixShell,
+// GlobalHeader, ChannelHeader and MobileChannelHeader with the real client; only the network and
+// modal/store boundaries are replaced by in-page doubles.
 // Not part of the product bundle and not authenticated production evidence.
 
-import React from 'react';
+import React, {useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
+import {IntlProvider} from 'react-intl';
+import {Provider, useDispatch, useSelector} from 'react-redux';
+import {MemoryRouter} from 'react-router-dom';
+import {legacy_createStore as createStore} from 'redux';
+
+import ChannelHeader from 'components/channel_header';
+import GlobalHeader from 'components/global_header/global_header';
+import MobileChannelHeader from 'components/mobile_channel_header';
+
+import {getIsMobileView} from 'selectors/views/browser';
+import {WindowSizes} from 'utils/constants';
 
 import type {ColorMode, ShellSnapshot} from './client';
-
+import {HeaderSlotContent} from './header_slots';
 import PhoenixShell from './index';
 
 type Scenario = {
     tenant: string;
+    channelName: string;
+    channelHeader: string;
     account: string;
     mode: ColorMode;
     apps: Array<{appCode: string; label: string; state: 'ready' | 'provisioning'; launchUrl?: string}>;
+    plugins: Array<{id: string; label: string}>;
     logoutUrl: string | null;
     palette: 'plan' | 'gateway';
 };
 
 type Call = {method: string; url: string; ifMatch: string | null; body: string | null};
+type PluginCall = {kind: string; id: string; channelId: string};
 
 declare global {
     interface Window {
         phoenixFixture?: Partial<Scenario>;
         phoenixCalls?: Call[];
+        phoenixPluginCalls?: PluginCall[];
+        phoenixDispatched?: Array<{type: string; [key: string]: unknown}>;
         chatEscapeSeen?: number;
     }
 }
 
 const scenario: Scenario = {
     tenant: 'Tenant A',
+    channelName: 'General',
+    channelHeader: 'Team discussions',
     account: 'A1',
     mode: 'light',
     apps: [
         {appCode: 'tasks', label: 'Tasks', state: 'ready', launchUrl: 'https://tasks.phoenixsoft.vn'},
         {appCode: 'files', label: 'Files pending', state: 'provisioning'},
         {appCode: 'portal', label: 'Portal', state: 'ready', launchUrl: 'https://portal.phoenixsoft.vn'},
+    ],
+    plugins: [
+        {id: 'plug-1', label: 'Jira'},
+        {id: 'plug-2', label: 'GitLab'},
     ],
     logoutUrl: 'https://auth.phoenixsoft.vn/oauth2/logout',
     palette: 'plan',
@@ -49,7 +73,11 @@ const scenario: Scenario = {
 let version = 7;
 let mode: ColorMode = scenario.mode;
 const calls: Call[] = [];
+const pluginCalls: PluginCall[] = [];
+const dispatched: Array<{type: string; [key: string]: unknown}> = [];
 window.phoenixCalls = calls;
+window.phoenixPluginCalls = pluginCalls;
+window.phoenixDispatched = dispatched;
 window.chatEscapeSeen = 0;
 
 // Token names and values are the Gateway ThemeDefaults ones (textMuted, surfaceMuted, primaryForeground, ...).
@@ -133,20 +161,442 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+const USER_ID = 'user-1';
+const TEAM_ID = 'team-1';
+const CHANNEL_ID = 'channel-1';
+
+function buildInitialState() {
+    const isMobile = window.innerWidth <= 768;
+    const channelObj = {
+        id: CHANNEL_ID,
+        team_id: TEAM_ID,
+        name: 'general',
+        display_name: scenario.channelName,
+        header: scenario.channelHeader,
+        purpose: 'General channel',
+        type: 'O',
+        delete_at: 0,
+        shared: false,
+        group_constrained: false,
+        props: {},
+    };
+    const userObj = {
+        id: USER_ID,
+        username: 'a1',
+        first_name: scenario.account,
+        last_name: '',
+        nickname: scenario.account,
+        email: 'a1@phoenixsoft.vn',
+        roles: 'system_user',
+        locale: 'en',
+        timezone: {useAutomaticTimezone: 'true', automaticTimezone: 'Asia/Ho_Chi_Minh', manualTimezone: ''},
+        props: {},
+        last_picture_update: 0,
+    };
+    const memberObj = {
+        channel_id: CHANNEL_ID,
+        user_id: USER_ID,
+        roles: 'channel_user',
+        msg_count: 10,
+        mention_count: 0,
+        mention_count_root: 0,
+        msg_count_root: 10,
+        notify_props: {mark_unread: 'mention', desktop: 'default', push: 'default', email: 'default'},
+    };
+
+    const headerButtons = scenario.plugins.map((p) => ({
+        id: p.id,
+        pluginId: p.id,
+        icon: <i className='icon icon-power-plug-outline' aria-hidden='true'/>,
+        tooltipText: `Plugin ${p.label}`,
+        dropdownText: `Plugin ${p.label}`,
+        action: (ch: {id: string}) => {
+            pluginCalls.push({kind: 'channel-button', id: p.id, channelId: ch?.id ?? CHANNEL_ID});
+        },
+    }));
+
+    const channelMenuItems = scenario.plugins.map((p) => ({
+        id: `menu-${p.id}`,
+        pluginId: p.id,
+        text: `Plugin ${p.label}`,
+        action: (channelId: string) => {
+            pluginCalls.push({kind: 'channel-menu', id: p.id, channelId: channelId ?? CHANNEL_ID});
+        },
+    }));
+
+    const mobileHeaderButtons = scenario.plugins.map((p) => ({
+        id: `mobile-${p.id}`,
+        pluginId: p.id,
+        icon: <i className='icon icon-power-plug-outline' aria-hidden='true'/>,
+        dropdownText: `Plugin ${p.label}`,
+        action: (ch: {id: string}) => {
+            pluginCalls.push({kind: 'mobile-plugin', id: p.id, channelId: ch?.id ?? CHANNEL_ID});
+        },
+    }));
+
+    return {
+        entities: {
+            general: {
+                config: {
+                    EnableFileAttachments: 'true',
+                    EnableCustomEmoji: 'false',
+                    EnableCustomUserStatuses: 'true',
+                    EnableUserAccessTokens: 'false',
+                    EnableCrossTeamSearch: 'false',
+                    BuildEnterpriseReady: 'true',
+                    HelpLink: 'https://docs.mattermost.com',
+                    ReportAProblemLink: 'https://mattermost.com/report',
+                    EnableAskCommunityLink: 'true',
+                    SiteName: 'Phoenix Chat',
+                },
+                license: {
+                    IsLicensed: 'true',
+                    Cloud: 'false',
+                    LDAPGroups: 'false',
+                },
+            },
+            users: {
+                currentUserId: USER_ID,
+                profiles: {[USER_ID]: userObj},
+                statuses: {[USER_ID]: 'online'},
+                mySessions: [],
+                lastActivity: {},
+            },
+            teams: {
+                currentTeamId: TEAM_ID,
+                teams: {
+                    [TEAM_ID]: {
+                        id: TEAM_ID,
+                        name: 'team-a',
+                        display_name: scenario.tenant,
+                        description: '',
+                        type: 'O',
+                        delete_at: 0,
+                    },
+                },
+                myMembers: {
+                    [TEAM_ID]: {
+                        team_id: TEAM_ID,
+                        user_id: USER_ID,
+                        roles: 'team_user',
+                        msg_count: 0,
+                        mention_count: 0,
+                        mention_count_root: 0,
+                        msg_count_root: 0,
+                    },
+                },
+            },
+            channels: {
+                currentChannelId: CHANNEL_ID,
+                channels: {[CHANNEL_ID]: channelObj},
+                channelsInTeam: {[TEAM_ID]: new Set([CHANNEL_ID])},
+                myMembers: {[CHANNEL_ID]: memberObj},
+                stats: {
+                    [CHANNEL_ID]: {
+                        channel_id: CHANNEL_ID,
+                        member_count: 5,
+                        guest_count: 0,
+                        pinnedpost_count: 2,
+                        files_count: 1,
+                    },
+                },
+                messageCounts: {
+                    [CHANNEL_ID]: {total: 10, root: 10},
+                },
+                roles: {[CHANNEL_ID]: new Set(['channel_user'])},
+                joinRequests: {},
+                restrictedDMs: {},
+            },
+            roles: {
+                roles: {
+                    system_user: {
+                        permissions: [
+                            'view_team',
+                            'read_channel',
+                            'manage_public_channel_properties',
+                            'manage_public_channel_members',
+                        ],
+                    },
+                    team_user: {
+                        permissions: [
+                            'view_team',
+                            'read_channel',
+                            'manage_public_channel_properties',
+                            'manage_public_channel_members',
+                        ],
+                    },
+                    channel_user: {
+                        permissions: [
+                            'read_channel',
+                            'manage_public_channel_properties',
+                            'manage_public_channel_members',
+                        ],
+                    },
+                },
+            },
+            preferences: {
+                myPreferences: {},
+            },
+            apps: {
+                main: {bindings: [], forms: {}},
+                rhs: {bindings: [], forms: {}},
+                pluginEnabled: false,
+            },
+            cloud: {
+                limits: {limitsLoaded: false, limits: {}},
+                subscription: {},
+                errors: {},
+            },
+            channelBookmarks: {
+                byChannelId: {},
+            },
+            sharedChannels: {
+                remotes: {},
+            },
+            emojis: {
+                customEmoji: {},
+                nonExistentEmoji: new Set(),
+            },
+            posts: {
+                posts: {},
+            },
+            threads: {
+                counts: {},
+                countsIncludingDirect: {},
+            },
+            typing: {},
+            admin: {
+                prevTrialLicense: {},
+            },
+            usage: {
+                files: {totalStorage: 0, totalStorageLoaded: true},
+                messages: {history: 0, historyLoaded: true},
+                teams: {active: 1, cloudArchived: 0, teamsLoaded: true},
+            },
+        },
+        views: {
+            browser: {
+                windowSize: isMobile ? WindowSizes.MOBILE_VIEW : WindowSizes.DESKTOP_VIEW,
+                focused: true,
+            },
+            productMenu: {
+                switcherOpen: false,
+            },
+            rhs: {
+                rhsState: null,
+                isSidebarOpen: false,
+                isSidebarExpanded: false,
+                isMenuOpen: false,
+                searchTerms: '',
+                searchTeam: TEAM_ID,
+                searchType: '',
+            },
+            lhs: {
+                isOpen: false,
+            },
+            modals: {
+                modalState: {},
+            },
+            channelSidebar: {
+                unreadFilterEnabled: false,
+            },
+            marketplace: {},
+            notice: {
+                hasBeenDismissed: {},
+            },
+            threads: {},
+        },
+        plugins: {
+            components: {
+                Product: [
+                    {
+                        id: 'boards',
+                        pluginId: 'focalboard',
+                        switcherIcon: 'product-boards',
+                        switcherText: 'Boards',
+                        baseURL: '/boards',
+                        switcherLinkURL: '/boards',
+                        mainComponent: () => null,
+                        headerCentreComponent: () => null,
+                        headerRightComponent: () => null,
+                    },
+                ],
+                ProductSwitcherMenuItem: [],
+                ChannelHeaderButton: headerButtons,
+                ChannelHeader: channelMenuItems,
+                MobileChannelHeaderButton: mobileHeaderButtons,
+                ChannelHeaderIcon: [],
+                CallButton: [],
+                SearchButtons: [],
+                UserGuideDropdown: [],
+            },
+            plugins: {},
+        },
+        requests: {
+            channels: {
+                getChannels: {status: 'not_started', error: null},
+            },
+        },
+        websocket: {
+            connected: true,
+        },
+    };
+}
+
+function fixtureReducer(state = buildInitialState(), action: any) {
+    if (action && typeof action.type === 'string' && !action.type.startsWith('@@redux/')) {
+        dispatched.push(action);
+    }
+    switch (action?.type) {
+    case 'PRODUCT_SWITCHER_OPEN':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                productMenu: {switcherOpen: Boolean(action.open)},
+            },
+        };
+    case 'BROWSER_WINDOW_RESIZED':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                browser: {...state.views.browser, windowSize: action.data ?? action.windowSize ?? state.views.browser.windowSize},
+            },
+        };
+    case 'UPDATE_RHS_STATE':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                rhs: {
+                    ...state.views.rhs,
+                    rhsState: action.state ?? null,
+                    isSidebarOpen: Boolean(action.state),
+                },
+            },
+        };
+    case 'TOGGLE_RHS_MENU':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                rhs: {
+                    ...state.views.rhs,
+                    isMenuOpen: !state.views.rhs.isMenuOpen,
+                },
+            },
+        };
+    case 'CLOSE_RHS':
+    case 'CLOSE_RHS_MENU':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                rhs: {
+                    ...state.views.rhs,
+                    rhsState: null,
+                    isSidebarOpen: false,
+                    isMenuOpen: false,
+                },
+            },
+        };
+    case 'TOGGLE_LHS':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                lhs: {isOpen: !state.views.lhs.isOpen},
+            },
+        };
+    case 'CLOSE_LHS':
+        return {
+            ...state,
+            views: {
+                ...state.views,
+                lhs: {isOpen: false},
+            },
+        };
+    default:
+        return state;
+    }
+}
+
+const store = createStore(fixtureReducer as any);
+const originalDispatch = store.dispatch;
+store.dispatch = ((action: any) => {
+    if (typeof action === 'function') {
+        return action(store.dispatch, store.getState);
+    }
+    return originalDispatch(action);
+}) as typeof store.dispatch;
+
+function FixtureWorkspace() {
+    const dispatch = useDispatch();
+    const isMobileView = useSelector(getIsMobileView);
+
+    useEffect(() => {
+        const onResize = () => {
+            dispatch({
+                type: 'BROWSER_WINDOW_RESIZED',
+                data: window.innerWidth <= 768 ? WindowSizes.MOBILE_VIEW : WindowSizes.DESKTOP_VIEW,
+            });
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, [dispatch]);
+
+    return (
+        <div className='phoenix-shell__app'>
+            <GlobalHeader/>
+            <div className='main-wrapper'>
+                <div
+                    id='channel_view'
+                    className='channel-view'
+                >
+                    <div className='inner-wrap channel__wrap'>
+                        {isMobileView && (
+                            <HeaderSlotContent name='channel'>
+                                <MobileChannelHeader/>
+                            </HeaderSlotContent>
+                        )}
+                        <div className='row main'>
+                            <div
+                                id='fixture-chat'
+                                className='app__content'
+                                style={{display: 'flex', flexDirection: 'column', justifyContent: 'space-between'}}
+                            >
+                                <HeaderSlotContent name='channel'>
+                                    <ChannelHeader/>
+                                </HeaderSlotContent>
+                                <div id='fixture-content'>{'Chat content'}</div>
+                                <input
+                                    id='fixture-composer'
+                                    className='form-control'
+                                    aria-label='Composer'
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 document.body.classList.add('app__body');
 createRoot(document.getElementById('root')!).render(
-    <PhoenixShell>
-        <div
-            id='fixture-chat'
-            className='app__content'
-            style={{display: 'flex', flexDirection: 'column', justifyContent: 'space-between'}}
+    <Provider store={store}>
+        <IntlProvider
+            locale='en'
+            defaultLocale='en'
+            messages={{}}
         >
-            <div id='fixture-content'>{'Chat content'}</div>
-            <input
-                id='fixture-composer'
-                className='form-control'
-                aria-label='Composer'
-            />
-        </div>
-    </PhoenixShell>,
+            <MemoryRouter initialEntries={['/team-a/channels/general']}>
+                <PhoenixShell>
+                    <FixtureWorkspace/>
+                </PhoenixShell>
+            </MemoryRouter>
+        </IntlProvider>
+    </Provider>,
 );

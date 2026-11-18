@@ -6,6 +6,8 @@ import styled from 'styled-components';
 
 import {useCurrentProductId} from 'utils/products';
 
+import {HeaderSlotContent, useHasHeaderSlots} from 'components/phoenix_shell/header_slots';
+
 import CenterControls from './center_controls/center_controls';
 import {useIsLoggedIn} from './hooks';
 import LeftControls from './left_controls/left_controls';
@@ -34,9 +36,24 @@ const GlobalHeaderContainer = styled.header`
 const GlobalHeader = (): JSX.Element | null => {
     const isLoggedIn = useIsLoggedIn();
     const currentProductID = useCurrentProductId();
+    const hasHeaderSlots = useHasHeaderSlots();
 
     if (!isLoggedIn) {
         return null;
+    }
+
+    if (hasHeaderSlots) {
+        return (
+            <>
+                <HeaderSlotContent name='left'>
+                    <LeftControls/>
+                </HeaderSlotContent>
+                <HeaderSlotContent name='utilities'>
+                    <CenterControls productId={currentProductID}/>
+                    <RightControls productId={currentProductID}/>
+                </HeaderSlotContent>
+            </>
+        );
     }
 
     return (

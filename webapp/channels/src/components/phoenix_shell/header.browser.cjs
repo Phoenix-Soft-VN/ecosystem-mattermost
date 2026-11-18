@@ -8,11 +8,11 @@
 //   node src/components/phoenix_shell/header.browser.cjs --check <H01|H02|all>
 //   node src/components/phoenix_shell/header.browser.cjs --capture all
 //
-// --prepare bundles the REAL PhoenixShell (index.tsx) with the REAL phoenix_shell.scss on top of
-// the REAL native Mattermost stylesheet (src/sass/styles.scss), in the native order, and records
-// the sha256 of every input. --check/--capture serve that bundle on an owned loopback port and
-// drive Chromium; they refuse to run when an input changed since --prepare and never build.
-// Only the network boundary and three heavy native modules are replaced (see STUBS).
+// --prepare bundles the REAL PhoenixShell, GlobalHeader, ChannelHeader, and MobileChannelHeader
+// with the REAL phoenix_shell.scss on top of the REAL native Mattermost stylesheet (src/sass/styles.scss),
+// in the native order, and records the sha256 of every input. --check/--capture serve that bundle on an
+// owned loopback port and drive Chromium; they refuse to run when an input changed since --prepare and
+// never build. Only the network boundary and non-header modal/store boundaries are replaced (see STUBS).
 // Fixture output is NOT authenticated production evidence.
 
 const fs = require('fs');
@@ -21,6 +21,7 @@ const http = require('http');
 const crypto = require('crypto');
 
 const CHANNELS = path.resolve(__dirname, '..', '..', '..');
+const COMPONENTS = path.resolve(__dirname, '..');
 const WEBAPP = path.resolve(CHANNELS, '..');
 const ECOSYSTEM = path.resolve(CHANNELS, '..', '..', '..', '..');
 const OUT = path.join(ECOSYSTEM, '.local', 'mattermost', 'header-compact');
@@ -41,15 +42,61 @@ const DESKTOP = {width: 1440, height: 900};
 const MOBILE = {width: 390, height: 844};
 const SHORT = {width: 390, height: 280};
 
-const SOURCES = ['index.tsx', 'phoenix_shell.scss', 'client.ts', 'theme.ts', 'session_lifecycle.ts', 'header.browser.tsx'].map((f) => path.join(__dirname, f));
+const SOURCES = [
+    path.join(__dirname, 'index.tsx'),
+    path.join(__dirname, 'header_slots.tsx'),
+    path.join(__dirname, 'phoenix_shell.scss'),
+    path.join(__dirname, 'client.ts'),
+    path.join(__dirname, 'theme.ts'),
+    path.join(__dirname, 'session_lifecycle.ts'),
+    path.join(__dirname, 'header.browser.tsx'),
+    path.join(__dirname, 'header.browser.cjs'),
+    path.join(COMPONENTS, 'global_header', 'global_header.tsx'),
+    path.join(COMPONENTS, 'global_header', 'left_controls', 'left_controls.tsx'),
+    path.join(COMPONENTS, 'global_header', 'center_controls', 'center_controls.tsx'),
+    path.join(COMPONENTS, 'global_header', 'right_controls', 'right_controls.tsx'),
+    path.join(COMPONENTS, 'root', 'root.tsx'),
+    path.join(COMPONENTS, 'channel_view', 'channel_view.tsx'),
+    path.join(COMPONENTS, 'channel_header', 'channel_header.tsx'),
+    path.join(COMPONENTS, 'mobile_channel_header', 'mobile_channel_header.tsx'),
+    path.join(COMPONENTS, 'channel_layout', 'center_channel', 'center_channel.tsx'),
+];
 
-// Fixture-only replacements of heavy native modules (they pull the whole Redux/app graph).
-// Everything the header's own code does (client.ts, theme.ts, index.tsx) is real.
+// Fixture-only replacements of heavy non-header boundaries (store singleton, modals, markdown).
+// All header owners, menus, triggers, slots, client.ts, theme.ts, and index.tsx are 100% real.
 const STUBS = {
-    'redux_store.js': 'export default {dispatch() {}, getState() { return {}; }};\n',
+    'redux_store.js': 'export default {dispatch(a) { return a; }, getState() { return {}; }};\n',
     'initial_loading_screen.js': 'export default {stop() {}};\n',
+    'empty_modal.js': [
+        'export default function EmptyModal() { return null; }',
+        'export const CustomizeYourExperienceTour = () => null;',
+        'export const useShowOnboardingTutorialStep = () => false;',
+        'export const OnboardingTourSteps = {CUSTOMIZE_EXPERIENCE: 0};',
+        'export const OnboardingTourStepsForGuestUsers = {CUSTOMIZE_EXPERIENCE: 0};',
+        'export const OnboardingTaskCategory = "onboarding";',
+        'export const OnboardingTasksName = {VISIT_SYSTEM_CONSOLE: "visit_system_console"};',
+        'export const TaskNameMapToSteps = {visit_system_console: {FINISHED: 1}};',
+        'export const useHandleOnBoardingTaskData = () => () => {};',
+        '',
+    ].join('\n'),
+    'markdown_stub.js': [
+        'export default function Markdown(props) {',
+        '    return props && props.message ? props.message : null;',
+        '}',
+        '',
+    ].join('\n'),
+    'global_actions_stub.js': [
+        'export function emitUserLoggedOutEvent() {',
+        '    if (window.phoenixDispatched) {',
+        '        window.phoenixDispatched.push({type: "EMIT_USER_LOGGED_OUT_EVENT"});',
+        '    }',
+        '}',
+        'export function showMobileSubMenuModal() {}',
+        'export function toggleSideBarRightMenuAction() { return () => {}; }',
+        '',
+    ].join('\n'),
     'native_utils.js': [
-        '// Mirrors what the native applyTheme does for the page: theme keys become CSS variables.',
+        '// Mirrors what the native applyTheme and utility helpers do for the header components.',
         'export function applyTheme(theme) {',
         '    const root = document.documentElement;',
         '    for (const [key, value] of Object.entries(theme)) {',
@@ -65,6 +112,16 @@ const STUBS = {
         '        }',
         '    }',
         '}',
+        'export function isEmptyObject(object) {',
+        '    return !object || Object.keys(object).length === 0;',
+        '}',
+        'export function handleFormattedTextClick() {}',
+        'export function localizeMessage(msg) { return msg && msg.defaultMessage ? msg.defaultMessage : String(msg || ""); }',
+        'export function getDisplayNameByUser(state, user) { return user ? (user.nickname || user.first_name || user.username || "") : ""; }',
+        'export function imageURLForUser() { return ""; }',
+        'export function isMac() { return false; }',
+        'export function cmdOrCtrlPressed(e) { return Boolean(e && (e.ctrlKey || e.metaKey)); }',
+        'export function isKeyPressed(e, code) { return Boolean(e && (e.key === (code && code[0]) || e.keyCode === (code && code[1]))); }',
         '',
     ].join('\n'),
 };
@@ -114,19 +171,59 @@ function webpackConfig() {
         output: {path: BUNDLE, filename: '[name].js', publicPath: '/', assetModuleFilename: 'files/[hash][ext]', clean: true},
         module: {
             rules: [
-                {test: /\.(js|jsx|ts|tsx)$/, exclude: /node_modules/, use: {loader: 'babel-loader', options: {cacheDirectory: false}}},
-                {test: /\.(css|scss)$/, exclude: /[\\/]highlight\.js[\\/]/, use: [MiniCssExtractPlugin.loader, 'css-loader']},
+                {test: /\.(js|jsx|ts|tsx)$/, exclude: /node_modules|[\\/]stubs[\\/]/, use: {loader: 'babel-loader', options: {cacheDirectory: false}}},
+                {test: /\.(css|scss)$/, use: [MiniCssExtractPlugin.loader, 'css-loader']},
                 {test: /\.scss$/, use: [{loader: 'sass-loader', options: {sassOptions: {loadPaths: ['src/sass']}}}]},
                 {test: /\.(png|eot|tiff|svg|woff2|woff|ttf|gif|mp3|jpg)$/, type: 'asset/resource'},
             ],
         },
         resolve: {
-            modules: ['node_modules', path.join(CHANNELS, 'src')],
+            modules: [path.join(CHANNELS, 'node_modules'), path.join(WEBAPP, 'node_modules'), 'node_modules', path.join(CHANNELS, 'src')],
             alias: {
                 'stores/redux_store$': stub('redux_store.js'),
                 'components/initial_loading_screen$': stub('initial_loading_screen.js'),
                 'utils/utils$': stub('native_utils.js'),
+                'actions/global_actions$': stub('global_actions_stub.js'),
+                'components/markdown$': stub('markdown_stub.js'),
+                'components/user_settings/modal$': stub('empty_modal.js'),
+                'components/custom_status/custom_status_modal$': stub('empty_modal.js'),
+                'components/custom_status/expiry_menu_items$': stub('empty_modal.js'),
+                'components/keyboard_shortcuts/keyboard_shortcuts_modal/keyboard_shortcuts_modal$': stub('empty_modal.js'),
+                'components/edit_channel_header_modal$': stub('empty_modal.js'),
+                'components/edit_channel_purpose_modal$': stub('empty_modal.js'),
+                'components/rename_channel_modal$': stub('empty_modal.js'),
+                'components/convert_channel_modal$': stub('empty_modal.js'),
+                'components/delete_channel_modal$': stub('empty_modal.js'),
+                'components/leave_channel_modal$': stub('empty_modal.js'),
+                'components/channel_notifications_modal$': stub('empty_modal.js'),
+                'components/channel_invite_modal$': stub('empty_modal.js'),
+                'components/channel_members_modal$': stub('empty_modal.js'),
+                'components/channel_settings_modal/channel_settings_modal$': stub('empty_modal.js'),
+                'components/channel_bookmarks/channel_bookmarks_create_modal$': stub('empty_modal.js'),
+                'components/more_direct_channels$': stub('empty_modal.js'),
+                'components/invitation_modal$': stub('empty_modal.js'),
+                'components/team_settings_modal$': stub('empty_modal.js'),
+                'components/team_members_modal$': stub('empty_modal.js'),
+                'components/leave_team_modal$': stub('empty_modal.js'),
+                'components/create_user_groups_modal$': stub('empty_modal.js'),
+                'components/user_groups_modal$': stub('empty_modal.js'),
+                'components/about_build_modal$': stub('empty_modal.js'),
+                'components/user_profile_modal$': stub('empty_modal.js'),
+                'components/profile_popover$': stub('empty_modal.js'),
+                'components/user_group_popover$': stub('empty_modal.js'),
+                'components/channel_move_to_sub_menu$': stub('empty_modal.js'),
+                'components/channel_attributes/channel_attribute_labels$': stub('empty_modal.js'),
+                'components/new_search/search_box$': stub('empty_modal.js'),
+                'components/tours$': stub('empty_modal.js'),
+                'components/tours/onboarding_tour$': stub('empty_modal.js'),
+                'components/onboarding_tasks$': stub('empty_modal.js'),
+                'components/app_bar/new_channel_with_board_tour_tip$': stub('empty_modal.js'),
+                '@emotion/styled$': require.resolve('styled-components', {paths: [WEBAPP, CHANNELS]}),
                 'mattermost-redux': path.join(CHANNELS, 'src', 'packages', 'mattermost-redux', 'src'),
+                '@mattermost/shared': path.join(WEBAPP, 'platform', 'shared', 'src'),
+                '@mattermost/types': path.join(WEBAPP, 'platform', 'types', 'src'),
+                '@mattermost/client/lib': path.join(WEBAPP, 'platform', 'client', 'src'),
+                '@mattermost/client': path.join(WEBAPP, 'platform', 'client', 'src'),
             },
             extensions: ['.ts', '.tsx', '.js', '.jsx'],
             fallback: {
@@ -159,7 +256,8 @@ const HTML = [
 function bundleInputs() {
     const files = {};
     for (const f of SOURCES) {
-        files[path.basename(f)] = sha256File(f);
+        const rel = path.relative(COMPONENTS, f).replace(/\\/g, '/');
+        files[rel] = sha256File(f);
     }
     const nativeDir = path.join(CHANNELS, 'src', 'sass');
     const config = JSON.stringify(webpackConfig(), (k, v) => (typeof v === 'function' || v instanceof RegExp ? String(v) : v));
@@ -186,7 +284,7 @@ function assertPrepared() {
     const now = bundleInputs();
     const stale = [];
     for (const [name, hash] of Object.entries(now.files)) {
-        if (prepared.inputs.files[name] !== hash) {
+        if (!prepared.inputs.files || prepared.inputs.files[name] !== hash) {
             stale.push(name);
         }
     }
@@ -276,11 +374,23 @@ async function openPage(browser, viewport, scenario = {}, colorScheme = 'light')
 }
 
 const SCENARIOS = {
-    short: {tenant: 'Tenant A', account: 'A1'},
+    short: {
+        tenant: 'Tenant A',
+        channelName: 'General',
+        channelHeader: 'Team discussions',
+        account: 'A1',
+    },
     long: {
         tenant: 'A'.repeat(120),
+        channelName: 'C'.repeat(120),
+        channelHeader: 'D'.repeat(120),
         account: 'B'.repeat(120),
-        apps: Array.from({length: 12}, (_, i) => ({appCode: 'app' + i, label: i === 3 ? 'C'.repeat(120) : 'Ứng dụng ' + i, state: 'ready', launchUrl: `https://app${i}.phoenixsoft.vn`})),
+        apps: Array.from({length: 12}, (_, i) => ({appCode: 'app' + i, label: i === 3 ? 'E'.repeat(120) : 'Ứng dụng ' + i, state: 'ready', launchUrl: `https://app${i}.phoenixsoft.vn`})),
+        plugins: [
+            {id: 'plug-1', label: 'Jira'},
+            {id: 'plug-2', label: 'GitLab'},
+            {id: 'plug-3', label: 'Zoom'},
+        ],
     },
 };
 
@@ -298,7 +408,11 @@ function collector(id, ctx) {
     };
 }
 
-const TRIGGER = {apps: 'button[aria-label="Ứng dụng"]', account: 'button[aria-label="Tài khoản"]'};
+const TRIGGER = {
+    apps: 'button[aria-label="Ứng dụng"]',
+    theme: 'button[aria-label^="Giao diện:"]',
+    utilities: 'button[aria-label="Tiện ích"]',
+};
 
 // Everything H01 reads is measured in the page from getComputedStyle / getBoundingClientRect.
 function measureLayout() {
@@ -312,9 +426,10 @@ function measureLayout() {
     const q = (s, root = document) => root.querySelector(s);
     const qa = (s, root = document) => Array.from(root.querySelectorAll(s));
     const header = q('[data-testid="phoenix-header"]');
-    const launcher = q('.phoenix-shell__icon-button');
-    const trigger = q('.phoenix-shell__account-trigger');
-    const radios = qa('[role="radio"]');
+    const launcher = q('button[aria-label="Ứng dụng"]', header);
+    const themeTrigger = q('button[aria-label^="Giao diện:"]', header);
+    const utilitiesTrigger = q('button[aria-label="Tiện ích"]', header);
+    const radios = qa('[role="menuitemradio"]');
     const panel = q('[data-phoenix-popover]');
     const corners = (el) => {
         const s = getComputedStyle(el);
@@ -324,7 +439,13 @@ function measureLayout() {
         const s = getComputedStyle(el);
         return [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth];
     };
-    const truncated = (el) => (el ? {scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, textOverflow: getComputedStyle(el).textOverflow, overflow: getComputedStyle(el).overflowX} : null);
+    const truncated = (el) => (el ? {
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        textOverflow: getComputedStyle(el).textOverflow,
+        overflow: getComputedStyle(el).overflowX,
+        whiteSpace: getComputedStyle(el).whiteSpace,
+    } : null);
     const reach = (el) => {
         if (!el || !panel) {
             return null;
@@ -334,23 +455,76 @@ function measureLayout() {
         const r = rect(el);
         return r.t >= p.t - 1 && r.b <= p.b + 1 && r.l >= p.l - 1 && r.r <= p.r + 1;
     };
+
+    const topGroups = [
+        q('[data-header-slot="left"]', header),
+        q('.phoenix-shell__brand', header),
+        q('[data-header-slot="channel"]', header),
+        q(':scope > [data-header-slot="utilities"]', header),
+        q('.phoenix-shell__controls', header),
+    ].filter((el) => el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0);
+
+    const headerButtons = qa('button, #searchFormContainer', header).filter((el) => {
+        if (panel && panel.contains(el)) {
+            return false;
+        }
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden';
+    });
+
     const out = {
         viewport: {w: window.innerWidth, h: window.innerHeight},
         doc: {scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth},
-        header: {rect: rect(header), scrollWidth: header.scrollWidth, clientWidth: header.clientWidth, display: getComputedStyle(header).display, flexWrap: getComputedStyle(header).flexWrap},
-        brand: rect(q('.phoenix-shell__brand')),
-        controls: rect(q('.phoenix-shell__controls')),
-        tenant: truncated(q('.phoenix-shell__tenant')),
-        launcher: {rect: rect(launcher), borders: borders(launcher), corners: corners(launcher), dots: qa('circle', launcher).length, background: getComputedStyle(launcher).backgroundColor},
-        trigger: {rect: rect(trigger), corners: corners(trigger), textDisplay: getComputedStyle(q('.phoenix-shell__account-text', trigger)).display, name: truncated(q('.phoenix-shell__account-name', trigger)), expanded: trigger.getAttribute('aria-expanded')},
+        bannerCount: qa('header, [role="banner"]').length,
+        extraHeaderRows: qa('#global-header, .row.header').length,
+        header: {
+            rect: rect(header),
+            scrollWidth: header.scrollWidth,
+            clientWidth: header.clientWidth,
+            display: getComputedStyle(header).display,
+            flexWrap: getComputedStyle(header).flexWrap,
+        },
+        groups: topGroups.map((g) => ({
+            name: g.getAttribute('data-header-slot') || g.className,
+            rect: rect(g),
+        })),
+        brand: rect(q('.phoenix-shell__brand', header)),
+        controls: rect(q('.phoenix-shell__controls', header)),
+        composer: rect(q('#fixture-composer')),
+        tenant: truncated(q('.phoenix-shell__tenant', header)),
+        channelTitle: truncated(q('#channelHeaderTitle', header)),
+        channelDesc: truncated(q('.header-description__text > p, .header-description__text', header)),
+        launcher: {
+            rect: rect(launcher),
+            borders: borders(launcher),
+            corners: corners(launcher),
+            dots: qa('circle', launcher).length,
+            background: getComputedStyle(launcher).backgroundColor,
+        },
+        themeTrigger: {
+            rect: rect(themeTrigger),
+            borders: borders(themeTrigger),
+            corners: corners(themeTrigger),
+            label: themeTrigger.getAttribute('aria-label'),
+            haspopup: themeTrigger.getAttribute('aria-haspopup'),
+            expanded: themeTrigger.getAttribute('aria-expanded'),
+        },
+        utilitiesTrigger: utilitiesTrigger ? {
+            rect: rect(utilitiesTrigger),
+            expanded: utilitiesTrigger.getAttribute('aria-expanded'),
+        } : null,
         launcherExpanded: launcher.getAttribute('aria-expanded'),
+        headerButtons: headerButtons.map((b) => ({
+            id: b.id || b.getAttribute('aria-label') || b.className,
+            rect: rect(b),
+        })),
         panels: qa('[data-phoenix-popover]').map((p) => p.getAttribute('data-phoenix-popover')),
         radioCount: radios.length,
-        logoutInDom: qa('.phoenix-shell__logout').length,
         panel: null,
     };
     if (panel) {
         const items = qa('.phoenix-shell__menu-item', panel);
+        const utilButtons = qa('button, #searchFormContainer', panel);
         out.panel = {
             kind: panel.getAttribute('data-phoenix-popover'),
             rect: rect(panel),
@@ -359,11 +533,10 @@ function measureLayout() {
             clientHeight: panel.clientHeight,
             scrollWidth: panel.scrollWidth,
             clientWidth: panel.clientWidth,
-            modes: radios.map((r) => ({rect: rect(r), borders: borders(r), corners: corners(r)})),
+            modes: radios.map((r) => ({rect: rect(r), borders: borders(r), corners: corners(r), label: r.textContent})),
             items: items.map((i) => ({rect: rect(i), truncated: truncated(i)})),
-            identityName: truncated(q('.phoenix-shell__identity .phoenix-shell__account-name', panel)),
-            logoutRect: rect(q('.phoenix-shell__logout', panel)),
-            reachable: [...radios, q('.phoenix-shell__logout', panel), ...items, q('.phoenix-shell__identity', panel)].filter(Boolean).map((el) => reach(el)),
+            utilButtons: utilButtons.map((b) => ({id: b.id || b.getAttribute('aria-label') || b.textContent, rect: rect(b)})),
+            reachable: [...radios, ...items, ...utilButtons].filter(Boolean).map((el) => reach(el)),
         };
         panel.scrollTop = 0;
     }
@@ -374,25 +547,28 @@ async function runH01(browser, c) {
     const cases = [];
     for (const [tenantKey, scenario] of Object.entries(SCENARIOS)) {
         for (const [vpKey, vp] of Object.entries({desktop: DESKTOP, mobile: MOBILE})) {
-            for (const state of ['closed', 'account', 'apps']) {
-                cases.push({tenantKey, scenario, vpKey, vp, state});
+            for (const modeKey of ['light', 'dark']) {
+                const states = vpKey === 'mobile' ? ['closed', 'theme', 'apps', 'utilities'] : ['closed', 'theme', 'apps'];
+                for (const state of states) {
+                    cases.push({tenantKey, scenario: {...scenario, mode: modeKey}, vpKey, vp, modeKey, state});
+                }
             }
         }
     }
     // A viewport shorter than the panel: it must scroll, not clip.
-    for (const state of ['account', 'apps']) {
-        cases.push({tenantKey: 'long', scenario: SCENARIOS.long, vpKey: 'short', vp: SHORT, state});
+    for (const state of ['theme', 'apps', 'utilities']) {
+        cases.push({tenantKey: 'long', scenario: {...SCENARIOS.long, mode: 'light'}, vpKey: 'short', vp: SHORT, modeKey: 'light', state});
     }
     for (const width of [641, 720, 721, 768]) {
-        for (const state of ['account', 'apps']) {
-            cases.push({tenantKey: 'long', scenario: SCENARIOS.long, vpKey: 'w' + width, vp: {width, height: 844}, state});
+        for (const state of ['theme', 'apps', 'utilities']) {
+            cases.push({tenantKey: 'long', scenario: {...SCENARIOS.long, mode: 'light'}, vpKey: 'w' + width, vp: {width, height: 844}, modeKey: 'light', state});
         }
     }
     const metrics = [];
     for (const k of cases) {
-        const label = `${k.tenantKey}/${k.vpKey}/${k.state}`;
+        const label = `${k.tenantKey}/${k.vpKey}/${k.modeKey}/${k.state}`;
         const t = collector('H01', {label});
-        const {page, context, problems} = await openPage(browser, k.vp, k.scenario);
+        const {page, context, problems} = await openPage(browser, k.vp, k.scenario, k.modeKey);
         try {
             if (k.state !== 'closed') {
                 await page.click(TRIGGER[k.state]);
@@ -401,33 +577,41 @@ async function runH01(browser, c) {
             const m = await page.evaluate(measureLayout);
             metrics.push({case: label, ...m});
             const narrow = k.vp.width <= 640;
+            const headerCenterY = (m.header.rect.t + m.header.rect.b) / 2;
             t.ok('page has no script or console errors', problems.length === 0, problems);
+            t.ok('exactly one banner and no extra header rows', m.bannerCount === 1 && m.extraHeaderRows === 0, {bannerCount: m.bannerCount, extraHeaderRows: m.extraHeaderRows});
             t.near('header height', m.header.rect.h, narrow ? 64 : 72);
             t.ok('header is a single non-wrapping row', m.header.display === 'flex' && m.header.flexWrap === 'nowrap' &&
-                m.brand.t >= m.header.rect.t - TOLERANCE && m.brand.b <= m.header.rect.b + TOLERANCE &&
-                m.controls.t >= m.header.rect.t - TOLERANCE && m.controls.b <= m.header.rect.b + TOLERANCE &&
-                m.controls.l >= m.brand.r - TOLERANCE && Math.abs((m.brand.t + m.brand.b) / 2 - (m.controls.t + m.controls.b) / 2) <= TOLERANCE, {brand: m.brand, controls: m.controls});
-            t.ok('header and page do not overflow horizontally', m.header.scrollWidth <= m.header.clientWidth && m.doc.scrollWidth <= m.doc.clientWidth, {header: [m.header.scrollWidth, m.header.clientWidth], doc: m.doc});
+                m.groups.length >= 4 &&
+                m.groups.every((g, idx) => g.rect.t >= m.header.rect.t - TOLERANCE &&
+                    g.rect.b <= m.header.rect.b + TOLERANCE &&
+                    Math.abs((g.rect.t + g.rect.b) / 2 - headerCenterY) <= 4 &&
+                    (idx === 0 || g.rect.l >= m.groups[idx - 1].rect.r - TOLERANCE)), m.groups);
+            t.ok('header and page do not overflow horizontally', m.header.scrollWidth <= m.header.clientWidth + TOLERANCE && m.doc.scrollWidth <= m.doc.clientWidth + TOLERANCE, {header: [m.header.scrollWidth, m.header.clientWidth], doc: m.doc});
+            t.ok('composer stays below the header', m.composer && m.composer.t >= m.header.rect.b - TOLERANCE, {composer: m.composer, header: m.header.rect});
+            t.ok('all visible header buttons meet 44x44 minimum target', m.headerButtons.length > 0 && m.headerButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE), m.headerButtons);
             t.near('launcher width', m.launcher.rect.w, 44);
             t.near('launcher height', m.launcher.rect.h, 44);
             t.ok('launcher has no border', m.launcher.borders.every((b) => b === '0px'), m.launcher.borders);
             t.ok('launcher radius is 8px', m.launcher.corners.every((r) => r === '8px'), m.launcher.corners);
             t.ok('launcher draws the nine dots', m.launcher.dots === 9, m.launcher.dots);
-            t.ok('account trigger is at least 44px', m.trigger.rect.h >= 44 - TOLERANCE && m.trigger.rect.w >= 44 - TOLERANCE, m.trigger.rect);
-            t.ok('account trigger is a pill', m.trigger.corners.every((r) => parseFloat(r) >= m.trigger.rect.h / 2 - TOLERANCE), m.trigger.corners);
-            t.ok('account trigger stays on screen and bounded', m.trigger.rect.r <= m.viewport.w + TOLERANCE && m.trigger.rect.w <= 262, m.trigger.rect);
-            t.ok(narrow ? 'mobile trigger hides identity text' : 'desktop trigger shows identity text', narrow ? m.trigger.textDisplay === 'none' : m.trigger.textDisplay !== 'none', m.trigger.textDisplay);
+            t.near('theme trigger width', m.themeTrigger.rect.w, 44);
+            t.near('theme trigger height', m.themeTrigger.rect.h, 44);
+            t.ok('theme trigger has menu popup and localized label', m.themeTrigger.haspopup === 'menu' && /^Giao diện: (Sáng|Tối|Hệ thống)$/.test(m.themeTrigger.label || ''), m.themeTrigger);
+            t.ok('tenant and channel title have computed nowrap and ellipsis', m.tenant && m.tenant.whiteSpace === 'nowrap' && m.tenant.textOverflow === 'ellipsis' && m.channelTitle && m.channelTitle.whiteSpace === 'nowrap' && m.channelTitle.textOverflow === 'ellipsis', {tenant: m.tenant, channelTitle: m.channelTitle});
             if (k.tenantKey === 'long') {
                 t.ok('long tenant truncates with an ellipsis', m.tenant.scrollWidth > m.tenant.clientWidth && m.tenant.textOverflow === 'ellipsis' && m.tenant.overflow === 'hidden', m.tenant);
-                if (!narrow) {
-                    t.ok('long account name truncates in the trigger', m.trigger.name.scrollWidth > m.trigger.name.clientWidth && m.trigger.name.textOverflow === 'ellipsis', m.trigger.name);
+                t.ok('long channel title truncates with an ellipsis', m.channelTitle.scrollWidth > m.channelTitle.clientWidth && m.channelTitle.textOverflow === 'ellipsis' && m.channelTitle.overflow === 'hidden', m.channelTitle);
+                if (k.vpKey === 'desktop') {
+                    t.ok('long channel description truncates on desktop', m.channelDesc && m.channelDesc.scrollWidth > m.channelDesc.clientWidth && m.channelDesc.textOverflow === 'ellipsis', m.channelDesc);
                 }
             } else {
-                t.ok('short tenant is not truncated', m.tenant.scrollWidth <= m.tenant.clientWidth, m.tenant);
+                t.ok('short tenant is not truncated', m.tenant.scrollWidth <= m.tenant.clientWidth + TOLERANCE, m.tenant);
+                t.ok('short channel title is not truncated', m.channelTitle.scrollWidth <= m.channelTitle.clientWidth + TOLERANCE, m.channelTitle);
             }
             if (k.state === 'closed') {
-                t.ok('closed header has no panel, radio or logout', m.panels.length === 0 && m.radioCount === 0 && m.logoutInDom === 0, {panels: m.panels, radios: m.radioCount, logout: m.logoutInDom});
-                t.ok('both triggers collapsed', m.launcherExpanded === 'false' && m.trigger.expanded === 'false');
+                t.ok('closed header has no open panel or radio', m.panels.length === 0 && m.radioCount === 0, {panels: m.panels, radios: m.radioCount});
+                t.ok('triggers collapsed', m.launcherExpanded === 'false' && m.themeTrigger.expanded === 'false' && (!m.utilitiesTrigger || m.utilitiesTrigger.expanded === 'false'));
             } else {
                 const p = m.panel;
                 t.ok('exactly the requested panel is open', m.panels.length === 1 && m.panels[0] === k.state, m.panels);
@@ -435,24 +619,22 @@ async function runH01(browser, c) {
                 t.ok('panel keeps a 16px viewport allowance', p.rect.w <= m.viewport.w - 16 + TOLERANCE, p.rect.w);
                 t.ok('panel scrolls vertically and does not overflow sideways', p.overflowY === 'auto' && p.scrollWidth <= p.clientWidth + TOLERANCE, {overflowY: p.overflowY, w: [p.scrollWidth, p.clientWidth]});
                 t.ok('every control is reachable inside the panel', p.reachable.length > 0 && p.reachable.every(Boolean), p.reachable);
-                if (k.vpKey === 'short') {
-                    t.ok('short viewport really scrolls the panel', p.scrollHeight > p.clientHeight + TOLERANCE, {scrollHeight: p.scrollHeight, clientHeight: p.clientHeight});
+                if (k.vpKey === 'short' && k.state === 'apps') {
+                    t.ok('short viewport really scrolls the apps panel', p.scrollHeight > p.clientHeight + TOLERANCE, {scrollHeight: p.scrollHeight, clientHeight: p.clientHeight});
                 }
-                if (k.state === 'account') {
-                    t.ok('three modes are present', p.modes.length === 3, p.modes.length);
-                    t.ok('modes are at least 44px', p.modes.every((r) => r.rect.h >= 44 - TOLERANCE && r.rect.w >= 44 - TOLERANCE), p.modes.map((r) => r.rect));
-                    t.ok('modes have no border and 6px radius', p.modes.every((r) => r.borders.every((b) => b === '0px') && r.corners.every((x) => x === '6px')), p.modes.map((r) => [r.borders, r.corners]));
-                    t.ok('logout link is present and at least 44px', m.logoutInDom === 1 && p.logoutRect.h >= 44 - TOLERANCE, p.logoutRect);
-                    if (k.tenantKey === 'long') {
-                        t.ok('long account name truncates in the panel', p.identityName.scrollWidth > p.identityName.clientWidth, p.identityName);
-                    }
-                } else {
-                    t.ok('launcher expanded and account collapsed', m.launcherExpanded === 'true' && m.trigger.expanded === 'false');
+                if (k.state === 'theme') {
+                    t.ok('three theme options are present', p.modes.length === 3 && p.modes.map((r) => r.label).join(',') === 'Sáng,Tối,Hệ thống', p.modes);
+                    t.ok('theme options are at least 44px', p.modes.every((r) => r.rect.h >= 44 - TOLERANCE && r.rect.w >= 44 - TOLERANCE), p.modes.map((r) => r.rect));
+                    t.ok('theme options have no border and 6px radius', p.modes.every((r) => r.borders.every((b) => b === '0px') && r.corners.every((x) => x === '6px')), p.modes.map((r) => [r.borders, r.corners]));
+                } else if (k.state === 'apps') {
+                    t.ok('launcher expanded and theme collapsed', m.launcherExpanded === 'true' && m.themeTrigger.expanded === 'false');
                     t.ok('menu items are at least 44px', p.items.length > 0 && p.items.every((i) => i.rect.h >= 44 - TOLERANCE), p.items.map((i) => i.rect.h));
                     t.ok('pending apps are not offered', p.items.length === (k.tenantKey === 'long' ? 12 : 2), p.items.length);
                     if (k.tenantKey === 'long') {
                         t.ok('long menu label truncates', p.items.some((i) => i.truncated.scrollWidth > i.truncated.clientWidth && i.truncated.textOverflow === 'ellipsis'));
                     }
+                } else if (k.state === 'utilities') {
+                    t.ok('overflow utilities panel exposes mobile and global actions >= 44x44', p.utilButtons.length >= 6 && p.utilButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE), p.utilButtons);
                 }
             }
         } finally {
@@ -593,10 +775,93 @@ async function runH02(browser, c) {
                 t.ok('footer uses the same surface and text', base.footer && base.footer[0] === theme.surface && base.footer[1] === theme.text, base.footer);
                 t.ok('resolved mode applied to the document', base.mode === theme.resolved && base.cls.includes('phoenix-shell--' + theme.resolved), base.mode);
 
-                // Keyboard: Tab reaches the launcher; Enter opens the menu; arrows move; Escape returns.
+                // Verify unique ownership of controls in the header (and inside utilities overflow on mobile).
+                if (vpKey === 'mobile') {
+                    await page.click(TRIGGER.utilities);
+                    await page.waitForSelector('[data-phoenix-popover="utilities"]');
+                }
+                const ownership = await page.evaluate(() => {
+                    const header = document.querySelector('[data-testid="phoenix-header"]');
+                    const count = (sel) => header.querySelectorAll(sel).length;
+                    return {
+                        productSwitch: count('#product_switch_menu'),
+                        channelMenu: count('#channelHeaderDropdownButton'),
+                        search: count('#searchFormContainer, button.navbar-search'),
+                        help: count('button[aria-label="Help"]'),
+                        mentions: count('button[aria-label="Recent mentions"]'),
+                        bookmarks: count('button[aria-label="Saved messages"]'),
+                        settings: count('button[aria-label="Settings"]'),
+                        accountMenu: count('#userAccountMenuButton'),
+                        appsLauncher: count('button[aria-label="Ứng dụng"]'),
+                        themeTrigger: count('button[aria-label^="Giao diện:"]'),
+                        duplicatePhoenixAccount: count('.phoenix-shell__account-trigger, [data-phoenix-popover="account"]'),
+                    };
+                });
+                note.ownership = ownership;
+                t.ok('each global, channel, launcher, and theme action appears exactly once with no duplicate account trigger',
+                    ownership.productSwitch === 1 &&
+                    ownership.channelMenu === 1 &&
+                    ownership.search === 1 &&
+                    ownership.help === 1 &&
+                    ownership.mentions === 1 &&
+                    ownership.bookmarks === 1 &&
+                    ownership.settings === 1 &&
+                    ownership.accountMenu === 1 &&
+                    ownership.appsLauncher === 1 &&
+                    ownership.themeTrigger === 1 &&
+                    ownership.duplicatePhoenixAccount === 0,
+                    ownership,
+                );
+                if (vpKey === 'mobile') {
+                    await page.keyboard.press('Escape');
+                    await until(page, 'close-utilities', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
+                }
+
+                // Exercise product switcher, channel menu, plugin actions, and global account menu on light case.
+                if (themeKey === 'light') {
+                    // Product switcher menu
+                    await page.click('#product_switch_menu');
+                    await page.waitForSelector('#product-switcher-menu-dropdown');
+                    const productItems = await page.evaluate(() => Array.from(document.querySelectorAll('#product-switcher-menu-dropdown .MenuItem')).map((el) => (el.textContent || '').trim()));
+                    t.ok('product switcher menu opens with Channels and Boards', productItems.some((x) => x.includes('Channels')) && productItems.some((x) => x.includes('Boards')), productItems);
+                    await page.click('#product_switch_menu');
+
+                    // Channel dropdown menu and plugin action
+                    await page.click('#channelHeaderDropdownButton');
+                    await page.waitForSelector('#channelHeaderDropdownMenu');
+                    const channelMenuOpen = await page.evaluate(() => Boolean(document.querySelector('#channelHeaderDropdownMenu')));
+                    t.ok('channel dropdown menu opens on click', channelMenuOpen);
+                    if (vpKey === 'mobile') {
+                        await page.click('#mobileChannelHeaderItemmobile-plug-1');
+                    } else {
+                        await page.keyboard.press('Escape');
+                        await page.click('#plug-1ChannelHeaderButton');
+                    }
+                    const plugCalls = await page.evaluate(() => window.phoenixPluginCalls || []);
+                    t.ok('plugin action fires callback with channel id', plugCalls.length >= 1 && plugCalls[0].id === 'plug-1' && plugCalls[0].channelId === 'channel-1', plugCalls);
+
+                    // Global UserAccountMenu
+                    if (vpKey === 'mobile') {
+                        await page.click(TRIGGER.utilities);
+                        await page.waitForSelector('[data-phoenix-popover="utilities"]');
+                    }
+                    await page.click('#userAccountMenuButton');
+                    await page.waitForSelector('#userAccountMenu');
+                    const userMenuText = await page.evaluate(() => (document.querySelector('#userAccountMenu')?.textContent || ''));
+                    t.ok('native UserAccountMenu opens with status, profile, and Log out', userMenuText.includes('Online') && userMenuText.includes('Profile') && userMenuText.includes('Log out'), userMenuText);
+                    await page.keyboard.press('Escape');
+                    if (vpKey === 'mobile') {
+                        await page.keyboard.press('Escape');
+                        await until(page, 'close-utilities-after-account', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
+                    }
+                }
+
+                // Keyboard on Launcher: focus launcher; Enter opens menu; arrows move; Escape returns.
+                await page.focus(TRIGGER.apps);
                 await page.keyboard.press('Tab');
+                await page.keyboard.press('Shift+Tab');
                 let f = await focused(page);
-                t.ok('Tab reaches the launcher', f && f.label === 'Ứng dụng', f);
+                t.ok('focus reaches the launcher', f && f.label === 'Ứng dụng', f);
                 const ring = await page.evaluate(readColors, TRIGGER.apps);
                 note.launcherFocus = ring;
                 t.ok('launcher focus ring is visible', ring.focusVisible && ring.outlineStyle === 'solid' && ring.outlineWidth === '2px' && ring.outlineContrast >= 3, ring);
@@ -627,85 +892,63 @@ async function runH02(browser, c) {
                 t.ok('Escape closes the menu and returns focus to the launcher', f && f.label === 'Ứng dụng' && (await page.locator('[data-phoenix-popover]').count()) === 0, f);
                 t.ok('Escape is consumed by the header, not Chat shortcuts', (await page.evaluate(() => window.chatEscapeSeen)) === before);
 
-                // Account: Tab, Space, focus lands on the persisted mode, Tab to logout.
+                // Theme trigger: Tab from launcher reaches theme icon; Space opens menu; focus lands on persisted mode.
                 await page.mouse.move(0, 0);
                 await page.keyboard.press('Tab');
                 f = await focused(page);
-                t.ok('Tab reaches the account trigger', f && f.label === 'Tài khoản', f);
-                const trig = await page.evaluate(readColors, TRIGGER.account);
+                const expectedModeLabel = theme.mode === 'light' ? 'Sáng' : theme.mode === 'dark' ? 'Tối' : 'Hệ thống';
+                t.ok('Tab reaches the theme icon trigger', f && f.label === `Giao diện: ${expectedModeLabel}`, f);
+                const trig = await page.evaluate(readColors, TRIGGER.theme);
                 note.triggerFocus = trig;
-                t.ok('account trigger focus ring is visible', trig.focusVisible && trig.outlineStyle === 'solid' && trig.outlineContrast >= 3 && trig.contrast >= 4.5, trig);
+                t.ok('theme trigger focus ring is visible', trig.focusVisible && trig.outlineStyle === 'solid' && trig.outlineContrast >= 3 && trig.contrast >= 4.5, trig);
                 await page.keyboard.press('Space');
-                await page.waitForSelector('[data-phoenix-popover="account"]');
+                await page.waitForSelector('[data-phoenix-popover="theme"]');
                 f = await focused(page);
-                t.ok('Space opens the account panel and focuses the persisted mode', f && f.role === 'radio' && f.checked === 'true' && f.text === (theme.mode === 'light' ? 'Sáng' : theme.mode === 'dark' ? 'Tối' : 'Hệ thống'), f);
-                const radioFocus = await page.evaluate(readColors, '[role="radio"]:focus');
+                t.ok('Space opens the theme menu and focuses the persisted mode', f && f.role === 'menuitemradio' && f.checked === 'true' && f.text === expectedModeLabel, f);
+                const radioFocus = await page.evaluate(readColors, '[role="menuitemradio"]:focus');
                 note.radioFocus = radioFocus;
                 t.ok('focused selected mode is legible with a visible ring', radioFocus && radioFocus.contrast >= 4.5 && radioFocus.outlineStyle === 'solid' && radioFocus.outlineContrast >= 3 && notFace(radioFocus.effectiveBackground), radioFocus);
-                const unchecked = await page.evaluate(readColors, '[role="radio"][aria-checked="false"]');
+                const unchecked = await page.evaluate(readColors, '[role="menuitemradio"][aria-checked="false"]');
                 note.radioRest = unchecked;
                 t.ok('unselected mode is transparent over the surface, not ButtonFace', unchecked && unchecked.effectiveBackground === theme.surface && unchecked.contrast >= 4.5, unchecked);
-                await page.keyboard.press('Tab');
-                f = await focused(page);
-                t.ok('Tab moves from the modes to the logout link', f && f.tag === 'A' && f.text === 'Đăng xuất', f);
-                const logout = await page.evaluate(readColors, '.phoenix-shell__logout:focus');
-                note.logoutFocus = logout;
-                t.ok('focused logout link is legible, ringed and not underlined', logout && logout.contrast >= 4.5 && logout.outlineStyle === 'solid' && logout.textDecoration === 'none', logout);
-                await page.keyboard.press('Shift+Tab');
-                t.ok('Shift+Tab returns to the selected mode (no focus trap)', (await focused(page)).role === 'radio');
-                const colors = await page.evaluate(() => ({
-                    muted: Array.from(document.querySelectorAll('.phoenix-shell__app-name, .phoenix-shell__account-tenant, .phoenix-shell__section-label')).map((e) => e.className),
-                }));
-                note.mutedClasses = colors.muted;
-                const mutedChecks = ['.phoenix-shell__app-name', '.phoenix-shell__section-label', '.phoenix-shell__identity .phoenix-shell__account-tenant', '.phoenix-shell__tenant', '.phoenix-shell__identity .phoenix-shell__account-name'];
-                for (const sel of mutedChecks) {
+
+                for (const sel of ['.phoenix-shell__app-name', '.phoenix-shell__tenant']) {
                     const r = await page.evaluate(readColors, sel);
                     t.ok(`text ${sel} has contrast >= 4.5`, r && r.contrast >= 4.5, r);
-                }
-                // Secondary text must use the canonical Gateway textMuted token, not a fallback.
-                for (const sel of ['.phoenix-shell__section-label', '.phoenix-shell__identity .phoenix-shell__account-tenant']) {
-                    const r = await page.evaluate(readColors, sel);
-                    t.ok(`text ${sel} is the Gateway textMuted colour ${theme.muted}`, r && r.color === theme.muted, r);
                 }
                 {
                     const r = await page.evaluate(readColors, '.phoenix-shell__app-name');
                     t.ok('brand app label is the Gateway textMuted colour', r && r.color === theme.muted, r);
                 }
-                const selected = await page.evaluate(readColors, '[role="radio"][aria-checked="true"]');
+                const selected = await page.evaluate(readColors, '[role="menuitemradio"][aria-checked="true"]');
                 note.radioSelected = selected;
                 t.ok('selected mode is legible', selected && selected.contrast >= 4.5 && selected.effectiveBackground !== theme.surface, selected);
 
-                // Hover over an unselected mode and over logout.
-                const radioBox = await page.locator('[role="radio"][aria-checked="false"]').first().boundingBox();
+                // Hover over an unselected mode.
+                const radioBox = await page.locator('[role="menuitemradio"][aria-checked="false"]').first().boundingBox();
                 await page.mouse.move(radioBox.x + radioBox.width / 2, radioBox.y + radioBox.height / 2);
-                const radioHover = await page.evaluate(readColors, '[role="radio"]:hover');
+                const radioHover = await page.evaluate(readColors, '[role="menuitemradio"]:hover');
                 note.radioHover = radioHover;
                 t.ok('hovered mode is legible and not a UA button face', radioHover && radioHover.contrast >= 4.5 && radioHover.effectiveBackground !== theme.surface && (dark ? radioHover.backgroundLuminance < 0.25 : true), radioHover);
-                const logoutBox = await page.locator('.phoenix-shell__logout').boundingBox();
-                await page.mouse.move(logoutBox.x + 20, logoutBox.y + logoutBox.height / 2);
-                const logoutHover = await page.evaluate(readColors, '.phoenix-shell__logout:hover');
-                note.logoutHover = logoutHover;
-                t.ok('hovered logout link is legible, not underlined, not a UA button face', logoutHover && logoutHover.contrast >= 4.5 && logoutHover.textDecoration === 'none' && (dark ? logoutHover.backgroundLuminance < 0.25 : true), logoutHover);
 
                 // Pointer: outside click closes and returns focus; the panels are mutually exclusive.
-                // Middle of the chat area, between the messages and the composer: on mobile the panel covers the top.
                 const chat = await page.locator('#fixture-chat').boundingBox();
                 await page.mouse.click(chat.x + chat.width - 20, chat.y + chat.height / 2);
                 await until(page, 'wait#1', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
-                await until(page, 'wait#2', () => document.activeElement && document.activeElement.getAttribute('aria-label') === 'Tài khoản');
-                t.ok('outside click closes the account panel and returns focus to its trigger', true);
+                await until(page, 'wait#2', () => document.activeElement && (document.activeElement.getAttribute('aria-label') || '').startsWith('Giao diện:'));
+                t.ok('outside click closes the theme menu and returns focus to its trigger', true);
                 await page.click(TRIGGER.apps);
                 await page.waitForSelector('[data-phoenix-popover="apps"]');
-                await page.click(TRIGGER.account);
-                await page.waitForSelector('[data-phoenix-popover="account"]');
+                await page.click(TRIGGER.theme);
+                await page.waitForSelector('[data-phoenix-popover="theme"]');
                 let both = await page.evaluate(() => Array.from(document.querySelectorAll('[data-phoenix-popover]')).map((p) => p.getAttribute('data-phoenix-popover')));
                 f = await focused(page);
-                t.ok('opening account closes the launcher and focuses the new panel', both.length === 1 && both[0] === 'account' && f.role === 'radio', {both, f});
+                t.ok('opening theme menu closes the launcher and focuses the new panel', both.length === 1 && both[0] === 'theme' && f.role === 'menuitemradio', {both, f});
                 await page.click(TRIGGER.apps);
                 await page.waitForSelector('[data-phoenix-popover="apps"]');
                 both = await page.evaluate(() => Array.from(document.querySelectorAll('[data-phoenix-popover]')).map((p) => p.getAttribute('data-phoenix-popover')));
                 f = await focused(page);
-                t.ok('opening the launcher closes the account panel and focuses the menu', both.length === 1 && both[0] === 'apps' && f.role === 'menuitem', {both, f});
+                t.ok('opening the launcher closes the theme menu and focuses the menu', both.length === 1 && both[0] === 'apps' && f.role === 'menuitem', {both, f});
                 await page.click(TRIGGER.apps);
                 await until(page, 'wait#3', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
                 f = await focused(page);
@@ -718,17 +961,46 @@ async function runH02(browser, c) {
                 t.ok('outside click on a focusable control keeps focus there', f && f.id === 'fixture-composer', f);
 
                 if (themeKey === 'light') {
-                    // Live theme change through the keyboard: the real choose() path and ETag.
-                    await page.focus(TRIGGER.account);
+                    // Live theme change through the keyboard: the real choose() path and sequential ETags ("7" -> "8").
+                    await page.focus(TRIGGER.theme);
                     await page.keyboard.press('Enter');
-                    await page.waitForSelector('[data-phoenix-popover="account"]');
                     await page.keyboard.press('ArrowRight');
                     await until(page, 'wait#5', () => document.documentElement.dataset.phoenixMode === 'dark');
-                    const after = await page.evaluate(() => ({surface: getComputedStyle(document.querySelector('.phoenix-shell')).backgroundColor, panel: getComputedStyle(document.querySelector('[data-phoenix-popover="account"]')).backgroundColor, checked: document.querySelector('[role="radio"][aria-checked="true"]').textContent, calls: window.phoenixCalls.filter((x) => x.method === 'PATCH')}));
-                    note.afterArrow = after;
-                    t.ok('ArrowRight selects Tối through PATCH with the page ETag and repaints dark', after.surface === 'rgb(17, 17, 17)' && after.panel === 'rgb(17, 17, 17)' && after.checked === 'Tối' && after.calls.length === 1 && after.calls[0].body === '{"mode":"dark"}' && after.calls[0].ifMatch === '"7"', after);
+                    const afterDark = await page.evaluate(() => ({
+                        surface: getComputedStyle(document.querySelector('.phoenix-shell')).backgroundColor,
+                        panel: getComputedStyle(document.querySelector('[data-phoenix-popover="theme"]')).backgroundColor,
+                        checked: document.querySelector('[role="menuitemradio"][aria-checked="true"]').textContent,
+                        triggerLabel: document.querySelector('button[aria-label^="Giao diện:"]').getAttribute('aria-label'),
+                        calls: window.phoenixCalls.filter((x) => x.method === 'PATCH'),
+                    }));
+                    note.afterArrowDark = afterDark;
+                    t.ok('ArrowRight selects Tối through PATCH with ETag "7" and repaints dark',
+                        afterDark.surface === 'rgb(17, 17, 17)' &&
+                        afterDark.panel === 'rgb(17, 17, 17)' &&
+                        afterDark.checked === 'Tối' &&
+                        afterDark.triggerLabel === 'Giao diện: Tối' &&
+                        afterDark.calls.length === 1 &&
+                        afterDark.calls[0].body === '{"mode":"dark"}' &&
+                        afterDark.calls[0].ifMatch === '"7"',
+                        afterDark,
+                    );
                     f = await focused(page);
-                    t.ok('focus follows the selected mode and the panel stays open', f && f.role === 'radio' && f.text === 'Tối');
+                    t.ok('focus follows Tối and the menu stays open', f && f.role === 'menuitemradio' && f.text === 'Tối');
+
+                    await page.keyboard.press('ArrowRight');
+                    await until(page, 'wait#6', () => document.querySelector('button[aria-label^="Giao diện:"]').getAttribute('aria-label') === 'Giao diện: Hệ thống');
+                    const afterSystem = await page.evaluate(() => ({
+                        checked: document.querySelector('[role="menuitemradio"][aria-checked="true"]').textContent,
+                        calls: window.phoenixCalls.filter((x) => x.method === 'PATCH'),
+                    }));
+                    note.afterArrowSystem = afterSystem;
+                    t.ok('second ArrowRight selects Hệ thống using returned ETag "8"',
+                        afterSystem.checked === 'Hệ thống' &&
+                        afterSystem.calls.length === 2 &&
+                        afterSystem.calls[1].body === '{"mode":"system"}' &&
+                        afterSystem.calls[1].ifMatch === '"8"',
+                        afterSystem,
+                    );
                 }
                 t.ok('page has no script or console errors', problems.length === 0, problems);
             } catch (e) {
@@ -788,16 +1060,17 @@ async function prepare() {
     }
     fs.writeFileSync(INPUTS_FILE, JSON.stringify({preparedAt: new Date().toISOString(), inputs, outputs}, null, 2));
 
-    // Early risk check: the real shell mounts with the real compiled CSS.
+    // Early risk check: the real shell mounts with the real compiled CSS and portaled slots.
     const early = await withBrowser(async ({browser, pw}) => {
         const {page, context, problems} = await openPage(browser, DESKTOP);
         try {
             const m = await page.evaluate(() => {
-                const l = document.querySelector('.phoenix-shell__icon-button');
+                const l = document.querySelector('button[aria-label="Ứng dụng"]');
                 const s = getComputedStyle(l);
                 const h = document.querySelector('[data-testid="phoenix-header"]').getBoundingClientRect();
+                const banners = document.querySelectorAll('header, [role="banner"]').length;
                 const css = Array.from(document.styleSheets).map((sh) => sh.href && sh.href.split('/').pop());
-                return {launcher: {width: l.getBoundingClientRect().width, height: l.getBoundingClientRect().height, borderTopWidth: s.borderTopWidth, minHeight: s.minHeight, borderRadius: s.borderTopLeftRadius}, header: {height: h.height}, stylesheets: css};
+                return {launcher: {width: l.getBoundingClientRect().width, height: l.getBoundingClientRect().height, borderTopWidth: s.borderTopWidth, minHeight: s.minHeight, borderRadius: s.borderTopLeftRadius}, header: {height: h.height, banners}, stylesheets: css};
             });
             return {identity: runtimeIdentity(pw, browser), problems, ...m};
         } finally {
@@ -809,7 +1082,7 @@ async function prepare() {
     console.log('early risk:', JSON.stringify({launcher: early.launcher, header: early.header, stylesheets: early.stylesheets, problems: early.problems}));
     console.log('inputs:', JSON.stringify(inputs.files));
     console.log('native sass digest:', inputs.nativeSassDigest);
-    if (early.problems.length || early.header.height !== 72) {
+    if (early.problems.length || early.header.height !== 72 || early.header.banners !== 1) {
         throw new Error('early risk check failed');
     }
 }
@@ -873,22 +1146,23 @@ async function capture(arg) {
         const jobs = [];
         for (const [vpKey, vp] of Object.entries({desktop: DESKTOP, mobile: MOBILE})) {
             for (const themeKey of ['light', 'dark']) {
-                for (const state of ['closed', 'account', 'apps']) {
+                for (const state of ['closed', 'theme', 'apps']) {
                     jobs.push({file: `${vpKey}-${themeKey}-${state}`, vpKey, vp, themeKey, state, scenario: SCENARIOS.short});
                 }
             }
         }
         jobs.push(
-            {file: 'extra-long-desktop-light-account', vpKey: 'desktop', vp: DESKTOP, themeKey: 'light', state: 'account', scenario: SCENARIOS.long},
-            {file: 'extra-long-mobile-dark-account', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'account', scenario: SCENARIOS.long},
+            {file: 'extra-long-desktop-light-theme', vpKey: 'desktop', vp: DESKTOP, themeKey: 'light', state: 'theme', scenario: SCENARIOS.long},
+            {file: 'extra-long-mobile-dark-theme', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'theme', scenario: SCENARIOS.long},
             {file: 'extra-long-mobile-light-apps', vpKey: 'mobile', vp: MOBILE, themeKey: 'light', state: 'apps', scenario: SCENARIOS.long},
-            {file: 'extra-short-viewport-light-account', vpKey: 'short', vp: SHORT, themeKey: 'light', state: 'account', scenario: SCENARIOS.short},
+            {file: 'extra-mobile-light-utilities', vpKey: 'mobile', vp: MOBILE, themeKey: 'light', state: 'utilities', scenario: SCENARIOS.short},
+            {file: 'extra-short-viewport-light-apps', vpKey: 'short', vp: SHORT, themeKey: 'light', state: 'apps', scenario: SCENARIOS.long},
             {file: 'extra-boundary-641-long-light-apps', vpKey: 'w641', vp: {width: 641, height: 844}, themeKey: 'light', state: 'apps', scenario: SCENARIOS.long},
-            {file: 'extra-gateway-dark-desktop-account', vpKey: 'desktop', vp: DESKTOP, themeKey: 'dark', state: 'account', scenario: {...SCENARIOS.short, palette: 'gateway'}},
-            {file: 'extra-gateway-dark-mobile-account', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'account', scenario: {...SCENARIOS.short, palette: 'gateway'}},
+            {file: 'extra-gateway-dark-desktop-theme', vpKey: 'desktop', vp: DESKTOP, themeKey: 'dark', state: 'theme', scenario: {...SCENARIOS.short, palette: 'gateway'}},
+            {file: 'extra-gateway-dark-mobile-theme', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'theme', scenario: {...SCENARIOS.short, palette: 'gateway'}},
         );
         for (const job of jobs) {
-            const {page, context, problems} = await openPage(browser, job.vp, {...job.scenario, mode: job.themeKey});
+            const {page, context, problems} = await openPage(browser, job.vp, {...job.scenario, mode: job.themeKey}, job.themeKey);
             try {
                 await open(job.state, page);
                 await page.mouse.move(0, 0);

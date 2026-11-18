@@ -13,6 +13,7 @@ import ChannelBookmarks from 'components/channel_bookmarks';
 import ChannelHeader from 'components/channel_header';
 import deferComponentRender from 'components/deferComponentRender';
 import {DropOverlayIdCenterChannel, FileUploadOverlay} from 'components/file_upload_overlay/file_upload_overlay';
+import {HeaderSlotContent} from 'components/phoenix_shell/header_slots';
 import PostView from 'components/post_view';
 
 import WebSocketClient from 'client/web_websocket_client';
@@ -222,7 +223,9 @@ export default class ChannelView extends React.PureComponent<Props, State> {
                     overlayType='center'
                     id={DropOverlayIdCenterChannel}
                 />
-                <ChannelHeader/>
+                <HeaderSlotContent name='channel'>
+                    <ChannelHeader/>
+                </HeaderSlotContent>
                 <ChannelBanner channelId={this.props.channelId}/>
                 {this.props.isChannelBookmarksEnabled && <ChannelBookmarks channelId={this.props.channelId}/>}
                 <DeferredPostView
