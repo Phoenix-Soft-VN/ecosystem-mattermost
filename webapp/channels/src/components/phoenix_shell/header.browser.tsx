@@ -19,6 +19,7 @@ type Scenario = {
     mode: ColorMode;
     apps: Array<{appCode: string; label: string; state: 'ready' | 'provisioning'; launchUrl?: string}>;
     logoutUrl: string | null;
+    palette: 'plan' | 'gateway';
 };
 
 type Call = {method: string; url: string; ifMatch: string | null; body: string | null};
@@ -41,6 +42,7 @@ const scenario: Scenario = {
         {appCode: 'portal', label: 'Portal', state: 'ready', launchUrl: 'https://portal.phoenixsoft.vn'},
     ],
     logoutUrl: 'https://auth.phoenixsoft.vn/oauth2/logout',
+    palette: 'plan',
     ...window.phoenixFixture,
 };
 
@@ -50,27 +52,38 @@ const calls: Call[] = [];
 window.phoenixCalls = calls;
 window.chatEscapeSeen = 0;
 
-const theme = {
+// Token names and values are the Gateway ThemeDefaults ones (textMuted, surfaceMuted, primaryForeground, ...).
+// 'plan' keeps the plan's binary surface/text pair; 'gateway' is the shipped default palette untouched.
+const gateway = {
     light: {
-        surface: '#ffffff',
-        text: '#111111',
-        border: '#d9dce1',
-        muted: '#5d6675',
-        primary: '#1c58d9',
-        primaryForeground: '#ffffff',
-        surfaceMuted: '#eef2ff',
-        focus: '#1c58d9',
+        primary: '#056B55',
+        primaryForeground: '#FFFFFF',
+        surface: '#FFFFFF',
+        surfaceMuted: '#EDF3F0',
+        headerBackground: '#FFFFFF',
+        headerText: '#17211E',
+        text: '#17211E',
+        textMuted: '#5D6D67',
+        border: '#738A80',
+        focus: '#056B55',
     },
     dark: {
-        surface: '#111111',
-        text: '#ffffff',
-        border: '#3a3f48',
-        muted: '#a8b0bd',
-        primary: '#8ab4ff',
-        primaryForeground: '#111111',
-        surfaceMuted: '#1f2937',
-        focus: '#8ab4ff',
+        primary: '#6CD7BC',
+        primaryForeground: '#06251D',
+        surface: '#18251F',
+        surfaceMuted: '#22332B',
+        headerBackground: '#18251F',
+        headerText: '#EAF3EF',
+        text: '#EAF3EF',
+        textMuted: '#B2C5BC',
+        border: '#698176',
+        focus: '#6CD7BC',
     },
+};
+
+const theme = scenario.palette === 'gateway' ? gateway : {
+    light: {...gateway.light, surface: '#ffffff', text: '#111111', headerBackground: '#ffffff', headerText: '#111111'},
+    dark: {...gateway.dark, surface: '#111111', text: '#ffffff', headerBackground: '#111111', headerText: '#ffffff'},
 };
 
 function snapshot(): ShellSnapshot {

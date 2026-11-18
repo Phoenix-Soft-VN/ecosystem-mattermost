@@ -383,6 +383,11 @@ async function runH01(browser, c) {
     for (const state of ['account', 'apps']) {
         cases.push({tenantKey: 'long', scenario: SCENARIOS.long, vpKey: 'short', vp: SHORT, state});
     }
+    for (const width of [641, 720, 721, 768]) {
+        for (const state of ['account', 'apps']) {
+            cases.push({tenantKey: 'long', scenario: SCENARIOS.long, vpKey: 'w' + width, vp: {width, height: 844}, state});
+        }
+    }
     const metrics = [];
     for (const k of cases) {
         const label = `${k.tenantKey}/${k.vpKey}/${k.state}`;
@@ -531,11 +536,15 @@ function readColors(selector) {
     };
 }
 
+const MUTED = {light: 'rgb(93, 109, 103)', dark: 'rgb(178, 197, 188)'};
 const THEMES = {
-    light: {mode: 'light', scheme: 'light', surface: 'rgb(255, 255, 255)', text: 'rgb(17, 17, 17)', resolved: 'light'},
-    dark: {mode: 'dark', scheme: 'light', surface: 'rgb(17, 17, 17)', text: 'rgb(255, 255, 255)', resolved: 'dark'},
-    'system-dark': {mode: 'system', scheme: 'dark', surface: 'rgb(17, 17, 17)', text: 'rgb(255, 255, 255)', resolved: 'dark'},
-    'system-light': {mode: 'system', scheme: 'light', surface: 'rgb(255, 255, 255)', text: 'rgb(17, 17, 17)', resolved: 'light'},
+    light: {mode: 'light', scheme: 'light', surface: 'rgb(255, 255, 255)', text: 'rgb(17, 17, 17)', resolved: 'light', muted: MUTED.light},
+    dark: {mode: 'dark', scheme: 'light', surface: 'rgb(17, 17, 17)', text: 'rgb(255, 255, 255)', resolved: 'dark', muted: MUTED.dark},
+    'system-dark': {mode: 'system', scheme: 'dark', surface: 'rgb(17, 17, 17)', text: 'rgb(255, 255, 255)', resolved: 'dark', muted: MUTED.dark},
+    'system-light': {mode: 'system', scheme: 'light', surface: 'rgb(255, 255, 255)', text: 'rgb(17, 17, 17)', resolved: 'light', muted: MUTED.light},
+    // The shipped Gateway default palette, untouched (ThemeDefaults.java).
+    'gateway-light': {mode: 'light', scheme: 'light', palette: 'gateway', surface: 'rgb(255, 255, 255)', text: 'rgb(23, 33, 30)', resolved: 'light', muted: MUTED.light},
+    'gateway-dark': {mode: 'dark', scheme: 'light', palette: 'gateway', surface: 'rgb(24, 37, 31)', text: 'rgb(234, 243, 239)', resolved: 'dark', muted: MUTED.dark},
 };
 
 // UA ButtonFace values; plain white is also wrong on a dark surface.
@@ -566,7 +575,7 @@ async function runH02(browser, c) {
             cases += 1;
             const label = `${vpKey}/${themeKey}`;
             const t = collector('H02', {label});
-            const {page, context, problems} = await openPage(browser, vp, {mode: theme.mode}, theme.scheme);
+            const {page, context, problems} = await openPage(browser, vp, {mode: theme.mode, palette: theme.palette || 'plan'}, theme.scheme);
             const note = {case: label};
             try {
                 const dark = theme.resolved === 'dark';
@@ -652,6 +661,15 @@ async function runH02(browser, c) {
                 for (const sel of mutedChecks) {
                     const r = await page.evaluate(readColors, sel);
                     t.ok(`text ${sel} has contrast >= 4.5`, r && r.contrast >= 4.5, r);
+                }
+                // Secondary text must use the canonical Gateway textMuted token, not a fallback.
+                for (const sel of ['.phoenix-shell__section-label', '.phoenix-shell__identity .phoenix-shell__account-tenant']) {
+                    const r = await page.evaluate(readColors, sel);
+                    t.ok(`text ${sel} is the Gateway textMuted colour ${theme.muted}`, r && r.color === theme.muted, r);
+                }
+                {
+                    const r = await page.evaluate(readColors, '.phoenix-shell__app-name');
+                    t.ok('brand app label is the Gateway textMuted colour', r && r.color === theme.muted, r);
                 }
                 const selected = await page.evaluate(readColors, '[role="radio"][aria-checked="true"]');
                 note.radioSelected = selected;
@@ -865,6 +883,9 @@ async function capture(arg) {
             {file: 'extra-long-mobile-dark-account', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'account', scenario: SCENARIOS.long},
             {file: 'extra-long-mobile-light-apps', vpKey: 'mobile', vp: MOBILE, themeKey: 'light', state: 'apps', scenario: SCENARIOS.long},
             {file: 'extra-short-viewport-light-account', vpKey: 'short', vp: SHORT, themeKey: 'light', state: 'account', scenario: SCENARIOS.short},
+            {file: 'extra-boundary-641-long-light-apps', vpKey: 'w641', vp: {width: 641, height: 844}, themeKey: 'light', state: 'apps', scenario: SCENARIOS.long},
+            {file: 'extra-gateway-dark-desktop-account', vpKey: 'desktop', vp: DESKTOP, themeKey: 'dark', state: 'account', scenario: {...SCENARIOS.short, palette: 'gateway'}},
+            {file: 'extra-gateway-dark-mobile-account', vpKey: 'mobile', vp: MOBILE, themeKey: 'dark', state: 'account', scenario: {...SCENARIOS.short, palette: 'gateway'}},
         );
         for (const job of jobs) {
             const {page, context, problems} = await openPage(browser, job.vp, {...job.scenario, mode: job.themeKey});
