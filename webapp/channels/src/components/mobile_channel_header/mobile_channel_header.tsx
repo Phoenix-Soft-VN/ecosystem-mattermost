@@ -129,6 +129,12 @@ export default class MobileChannelHeader extends React.PureComponent<Props> {
             </div>
         );
 
+        const slotHeading = (!inGlobalThreads && !inDrafts && channel) ? (
+            <ChannelHeaderMenu
+                isMobile={true}
+            />
+        ) : heading;
+
         const channelIdentity = (
             <div
                 id='navbar'
@@ -137,8 +143,14 @@ export default class MobileChannelHeader extends React.PureComponent<Props> {
             >
                 <CollapseLhsButton/>
                 <div className={classNames('navbar-brand', {GlobalThreads___title: inGlobalThreads})}>
-                    {heading}
+                    {slotHeading}
                 </div>
+                {!inGlobalThreads && !inDrafts && channel && isMuted && (
+                    <UnmuteChannelButton
+                        user={user}
+                        channel={channel}
+                    />
+                )}
             </div>
         );
 

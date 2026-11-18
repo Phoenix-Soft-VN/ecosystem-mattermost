@@ -1,12 +1,12 @@
 // Copyright (c) Phoenix-Soft-VN. See LICENSE.txt.
 
-import React, {useCallback, useContext, useEffect, useId, useRef, useState} from 'react';
+import React, {useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {IntlContext, IntlProvider} from 'react-intl';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 import {UserTypes} from 'mattermost-redux/action_types';
 import store from 'stores/redux_store';
 import InitialLoadingScreen from 'components/initial_loading_screen';
-import {HeaderSlotsProvider, HeaderSlotTarget, useHasSlotContent} from './header_slots';
+import {HeaderSlotsProvider, HeaderSlotTarget, useCompactChannelTools, useHasSlotContent} from './header_slots';
 import {registerPhoenixSessionLifecycle, NATIVE_SESSION_CLEARED} from './session_lifecycle';
 
 import type {AppTile, ColorMode, Navigation, ShellSnapshot} from './client';
@@ -25,7 +25,7 @@ type Phase =
 type PopoverId = 'apps' | 'theme' | 'utilities';
 
 const REVALIDATE_MS = 5000;
-const COMPACT_UTILITIES_WIDTH = 900;
+const COMPACT_UTILITIES_WIDTH = 1020;
 const MODES: Array<{value: ColorMode; label: string}> = [
     {value: 'light', label: 'Sáng'},
     {value: 'dark', label: 'Tối'},
@@ -580,6 +580,7 @@ export default function PhoenixShell({children}: Props) {
                         snapshot={snapshot}
                         resolved={resolved}
                         themeTriggerLabel={themeTriggerLabel}
+                        viewportWidth={viewportWidth}
                         isCompactUtilities={isCompactUtilities}
                         openPopover={openPopover}
                         appsPanelId={appsPanelId}
@@ -625,6 +626,7 @@ type HeaderBarProps = {
     snapshot: ShellSnapshot;
     resolved: ResolvedMode;
     themeTriggerLabel: string;
+    viewportWidth: number;
     isCompactUtilities: boolean;
     openPopover: PopoverId | null;
     appsPanelId: string;
@@ -647,6 +649,7 @@ function PhoenixHeaderBar({
     snapshot,
     resolved,
     themeTriggerLabel,
+    viewportWidth,
     isCompactUtilities,
     openPopover,
     appsPanelId,
@@ -661,11 +664,37 @@ function PhoenixHeaderBar({
     onModesKeyDown,
     select,
 }: HeaderBarProps) {
+    const headerRef = useRef<HTMLElement | null>(null);
+    const [overflowUtilities, setOverflowUtilities] = useState(false);
+    const [compactChannelTools, setCompactChannelTools] = useCompactChannelTools();
     const hasUtilities = useHasSlotContent('utilities');
-    const showOverflowUtilities = isCompactUtilities && hasUtilities;
+    const effectiveCompactUtilities = isCompactUtilities || overflowUtilities;
+    const showOverflowUtilities = effectiveCompactUtilities && hasUtilities;
+
+    useEffect(() => {
+        setOverflowUtilities(false);
+        setCompactChannelTools(false);
+    }, [viewportWidth, setCompactChannelTools]);
+
+    useLayoutEffect(() => {
+        const el = headerRef.current;
+        if (!el || el.clientWidth === 0) {
+            return;
+        }
+        const channelSlot = el.querySelector<HTMLElement>('[data-header-slot="channel"]');
+        const channelOverflows = Boolean(channelSlot && channelSlot.scrollWidth > channelSlot.clientWidth + 1);
+        if (el.scrollWidth > el.clientWidth + 1 || channelOverflows) {
+            if (!effectiveCompactUtilities) {
+                setOverflowUtilities(true);
+            } else if (!compactChannelTools) {
+                setCompactChannelTools(true);
+            }
+        }
+    });
 
     return (
         <header
+            ref={headerRef}
             className='phoenix-shell__header'
             data-testid='phoenix-header'
         >
@@ -684,7 +713,7 @@ function PhoenixHeaderBar({
                 </span>
             </div>
             <HeaderSlotTarget name='channel'/>
-            {!isCompactUtilities && <HeaderSlotTarget name='utilities'/>}
+            {!effectiveCompactUtilities && <HeaderSlotTarget name='utilities'/>}
             {/* Delegated Escape/blur handling: the focusable controls inside own the interaction. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
             <div

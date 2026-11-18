@@ -44,8 +44,10 @@
         min-width: 0;
         box-sizing: border-box;
         flex-wrap: nowrap;
+        padding: 0 8px;
         border-bottom: 1px solid var(--phoenix-color-border, #d9dce1);
         box-shadow: 0 1px 8px rgb(15 23 42 / 4%);
+        gap: 4px;
     }
 
     &__footer {
@@ -136,12 +138,14 @@
 
     &__header:has(.phoenix-shell__slot-content--channel:not(:empty)) &__brand {
         flex: 0 1 auto;
-        max-width: 180px;
+        min-width: 84px;
+        max-width: 112px;
+        gap: 4px;
     }
 
     &__controls {
         flex: 0 0 auto;
-        gap: 4px;
+        gap: 2px;
     }
 
     &__brand-text {
@@ -166,8 +170,8 @@
 
     &__monogram {
         display: inline-flex;
-        width: 40px;
-        height: 40px;
+        width: 32px;
+        height: 32px;
         flex: 0 0 auto;
         align-items: center;
         justify-content: center;
@@ -179,9 +183,9 @@
     }
 
     &__logo {
-        width: 40px;
+        width: 32px;
         max-width: 180px;
-        height: 40px;
+        height: 32px;
         flex: 0 0 auto;
         object-fit: contain;
     }
@@ -190,7 +194,7 @@
         width: 1px;
         height: 28px;
         flex: 0 0 auto;
-        margin: 0 2px;
+        margin: 0;
         background: var(--phoenix-color-border, #d9dce1);
     }
 
@@ -378,7 +382,7 @@
             flex: 0 0 auto;
             flex-basis: auto;
             align-items: center;
-            gap: 4px;
+            gap: 2px;
 
             > * + * {
                 margin-left: 0;
@@ -428,20 +432,20 @@
         .GlobalSearchNav {
             display: flex;
             min-width: 0;
-            max-width: 140px;
+            max-width: 108px;
             flex: 0 1 auto;
             align-items: center;
         }
 
         #searchFormContainer {
             display: inline-flex;
-            min-width: 96px;
-            max-width: 140px;
+            min-width: 72px;
+            max-width: 108px;
             height: 44px;
             min-height: 44px;
             box-sizing: border-box;
             align-items: center;
-            padding: 0 10px;
+            padding: 0 8px;
             border: 0;
             border-radius: 8px;
             background: var(--phoenix-color-surfaceMuted, rgb(128 128 128 / 12%));
@@ -475,15 +479,15 @@
             }
 
             .flex-child:first-child {
-                min-width: 0;
-                flex: 1 1 0;
-                padding: 0 4px 0 0;
+                min-width: min-content;
+                flex: 1 1 auto;
+                padding: 0 2px 0 0;
             }
 
             .channel-header__info {
                 display: flex;
                 width: 100%;
-                min-width: 0;
+                min-width: min-content;
                 align-items: center;
                 padding: 0;
             }
@@ -491,42 +495,49 @@
             .channel-header__title {
                 display: flex;
                 width: 100%;
-                min-width: 0;
+                min-width: min-content;
                 height: 44px;
                 align-items: center;
-                gap: 4px;
+                gap: 2px;
             }
 
             .channel-header__top,
             .channel-header__bot {
                 display: flex;
-                min-width: 0;
-                max-width: 180px;
-                flex: 0 1 auto;
+                min-width: max-content;
+                max-width: 132px;
+                flex: 0 0 auto;
                 align-items: center;
                 gap: 2px;
 
                 .MenuWrapper {
                     display: flex;
                     min-width: 0;
-                    flex: 1 1 auto;
+                    flex: 0 1 auto;
                 }
             }
 
             #channelHeaderDropdownButton.channel-header__trigger {
                 display: inline-flex;
-                min-width: 44px;
-                max-width: 100%;
+                width: auto;
+                min-width: 56px;
+                max-width: 84px;
                 height: 44px;
                 min-height: 44px;
+                flex: 0 1 auto;
                 box-sizing: border-box;
                 align-items: center;
-                padding: 0 6px;
+                padding: 0 4px;
                 border: 0;
                 border-radius: 8px;
                 margin: 0;
                 background: transparent;
                 color: inherit;
+                overflow: hidden;
+
+                svg {
+                    flex: 0 0 16px;
+                }
             }
 
             #channelHeaderTitle.heading {
@@ -535,7 +546,7 @@
                 flex: 1 1 auto;
                 margin: 0;
                 color: inherit;
-                font-size: 14px;
+                font-size: 13px;
                 line-height: 1.2;
                 text-overflow: ellipsis;
                 white-space: nowrap;
@@ -545,13 +556,15 @@
             .channel-header__mute.btn,
             .channel-header__icon {
                 display: inline-flex !important;
+                width: 44px;
                 min-width: 44px;
                 height: 44px;
                 min-height: 44px;
+                flex: 0 0 44px;
                 box-sizing: border-box;
                 align-items: center;
                 justify-content: center;
-                padding: 0 6px;
+                padding: 0 2px;
                 border: 0;
                 border-radius: 8px;
                 margin: 0;
@@ -566,7 +579,7 @@
 
             .channel-header__icons {
                 display: flex;
-                min-width: 0;
+                min-width: max-content;
                 flex: 0 0 auto;
                 align-items: center;
                 margin: 0;
@@ -574,6 +587,7 @@
             }
 
             .channel-header__description {
+                contain: inline-size;
                 display: flex;
                 overflow: hidden;
                 min-width: 48px;
@@ -679,7 +693,8 @@
             }
         }
 
-        .phoenix-mobile-utilities {
+        .phoenix-mobile-utilities,
+        .phoenix-channel-utilities {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
@@ -739,7 +754,19 @@
         }
     }
 
-    @media (max-width: 900px) {
+    @media (max-width: 1180px) {
+        &__header {
+            padding: 0 8px;
+            gap: 4px;
+
+            #channel-header.channel-header .channel-header__description {
+                min-width: 0;
+                flex: 1 1 0;
+            }
+        }
+    }
+
+    @media (max-width: 1020px) {
         &__header {
             #product_switch_menu {
                 width: 44px;
@@ -770,18 +797,35 @@
     @media (max-width: 640px) {
         &__header {
             height: 64px;
-            padding: 0 4px;
-            gap: 2px;
+            padding: 0 2px;
+            gap: 1px;
+
+            .phoenix-mobile-channel {
+                gap: 1px;
+
+                .navbar-brand {
+                    min-width: 44px;
+                    flex: 1 1 44px;
+                }
+            }
         }
 
-        &__header:has(.phoenix-shell__slot-content--channel:not(:empty)) &__brand {
-            max-width: 78px;
-            min-width: 0;
-            gap: 4px;
+        &__header:has(.phoenix-shell__slot-content--channel:not(:empty)) {
+            .phoenix-shell__brand {
+                max-width: 56px;
+                min-width: 48px;
+                gap: 2px;
+            }
+
+            .phoenix-shell__logo,
+            .phoenix-shell__monogram,
+            .phoenix-shell__app-name {
+                display: none;
+            }
         }
 
         &__controls {
-            gap: 1px;
+            gap: 0;
         }
 
         &__logo,

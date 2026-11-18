@@ -118,6 +118,7 @@ describe('components/ChannelHeaderMobile/ChannelHeaderMobile', () => {
                         <ChannelHeaderMobile
                             channel={channel}
                             isMobileView={true}
+                            isMuted={true}
                             user={user}
                             actions={actions}
                         />
@@ -127,6 +128,8 @@ describe('components/ChannelHeaderMobile/ChannelHeaderMobile', () => {
 
             expect(container.querySelector('.navbar-fixed-top')).toBeNull();
             expect(container.querySelector('[data-header-slot="channel"] .phoenix-mobile-channel')).not.toBeNull();
+            expect(container.querySelector('[data-header-slot="channel"] .phoenix-mobile-channel > button.icon__mute')).not.toBeNull();
+            expect(container.querySelector('[data-header-slot="channel"] .navbar-brand button.icon__mute')).toBeNull();
             expect(container.querySelector('[data-header-slot="utilities"] .phoenix-mobile-utilities')).not.toBeNull();
             expect(screen.getByText('Toggle sidebar')).toBeInTheDocument();
             expect(screen.getByLabelText('Search')).toBeInTheDocument();

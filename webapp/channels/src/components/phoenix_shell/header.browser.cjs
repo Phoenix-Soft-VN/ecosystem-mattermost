@@ -556,10 +556,51 @@ function measureLayout() {
             expanded: utilitiesTrigger.getAttribute('aria-expanded'),
         } : null,
         launcherExpanded: launcher.getAttribute('aria-expanded'),
-        headerButtons: headerButtons.map((b) => ({
-            id: b.id || b.getAttribute('aria-label') || b.className,
-            rect: rect(b),
-        })),
+        headerButtons: headerButtons.map((b) => {
+            const r = rect(b);
+            let hit = null;
+            if (!panel && r && r.w > 0 && r.h > 0) {
+                const cy = (r.t + r.b) / 2;
+                const cx = (r.l + r.r) / 2;
+                const cEl = document.elementFromPoint(cx, cy);
+                const lEl = document.elementFromPoint(r.l + 4, cy);
+                const rEl = document.elementFromPoint(r.r - 4, cy);
+                const nameEl = (el) => (el ? (el.id || el.getAttribute('aria-label') || el.className || el.tagName) : null);
+                hit = {
+                    centerOk: Boolean(cEl && b.contains(cEl)),
+                    leftOk: Boolean(lEl && b.contains(lEl)),
+                    rightOk: Boolean(rEl && b.contains(rEl)),
+                    centerHit: nameEl(cEl),
+                    leftHit: nameEl(lEl),
+                    rightHit: nameEl(rEl),
+                };
+            }
+            return {
+                id: b.id || b.getAttribute('aria-label') || b.className,
+                rect: r,
+                hit,
+            };
+        }),
+        buttonOverlaps: (() => {
+            const overlaps = [];
+            for (let i = 0; i < headerButtons.length; i++) {
+                const a = headerButtons[i];
+                const ra = rect(a);
+                for (let j = i + 1; j < headerButtons.length; j++) {
+                    const b = headerButtons[j];
+                    const rb = rect(b);
+                    if (Math.min(ra.r, rb.r) - Math.max(ra.l, rb.l) > 0.5 && Math.min(ra.b, rb.b) - Math.max(ra.t, rb.t) > 0.5) {
+                        overlaps.push({
+                            a: a.id || a.getAttribute('aria-label') || a.className,
+                            b: b.id || b.getAttribute('aria-label') || b.className,
+                            ra,
+                            rb,
+                        });
+                    }
+                }
+            }
+            return overlaps;
+        })(),
         panels: qa('[data-phoenix-popover]').map((p) => p.getAttribute('data-phoenix-popover')),
         radioCount: radios.length,
         panel: null,
@@ -601,9 +642,20 @@ async function runH01(browser, c) {
     for (const state of ['theme', 'apps', 'utilities']) {
         cases.push({tenantKey: 'long', scenario: {...SCENARIOS.long, mode: 'light'}, vpKey: 'short', vp: SHORT, modeKey: 'light', state});
     }
-    for (const width of [641, 720, 721, 768]) {
-        for (const state of ['theme', 'apps', 'utilities']) {
+    for (const width of [641, 720, 721, 768, 901]) {
+        for (const state of ['closed', 'theme', 'apps', 'utilities']) {
             cases.push({tenantKey: 'long', scenario: {...SCENARIOS.long, mode: 'light'}, vpKey: 'w' + width, vp: {width, height: 844}, modeKey: 'light', state});
+        }
+    }
+    // Seven-plugin long-label desktop hit-test case (below native 15-plugin threshold).
+    const sevenPlugins = Array.from({length: 7}, (_, i) => ({id: `plug-${i + 1}`, label: `Plugin ${i + 1}`}));
+    for (const modeKey of ['light', 'dark']) {
+        cases.push({tenantKey: 'long7', scenario: {...SCENARIOS.long, plugins: sevenPlugins, mode: modeKey}, vpKey: 'desktop', vp: DESKTOP, modeKey, state: 'closed'});
+    }
+    // Muted mobile 390x844 cases: Unmute button must have full 44x44 unclipped hit target.
+    for (const [tenantKey, baseScenario] of Object.entries(SCENARIOS)) {
+        for (const state of ['closed', 'utilities']) {
+            cases.push({tenantKey, scenario: {...baseScenario, muted: true, mode: 'light'}, vpKey: 'mobile-muted', vp: MOBILE, modeKey: 'light', state});
         }
     }
     const metrics = [];
@@ -632,6 +684,19 @@ async function runH01(browser, c) {
             t.ok('header and page do not overflow horizontally', m.header.scrollWidth <= m.header.clientWidth + TOLERANCE && m.doc.scrollWidth <= m.doc.clientWidth + TOLERANCE, {header: [m.header.scrollWidth, m.header.clientWidth], doc: m.doc});
             t.ok('composer stays below the header', m.composer && m.composer.t >= m.header.rect.b - TOLERANCE, {composer: m.composer, header: m.header.rect});
             t.ok('all visible header buttons meet 44x44 minimum target', m.headerButtons.length > 0 && m.headerButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE), m.headerButtons);
+            t.ok('visible header buttons do not overlap one another', m.buttonOverlaps.length === 0, m.buttonOverlaps);
+            if (k.state === 'closed') {
+                const failedHits = m.headerButtons.filter((b) => !b.hit || !b.hit.centerOk || !b.hit.leftOk || !b.hit.rightOk);
+                t.ok('every visible header button centre and edges hit-test to itself without clipping or interception', failedHits.length === 0, failedHits);
+            }
+            if (k.tenantKey === 'long7') {
+                const plugBtns = m.headerButtons.filter((b) => /^plug-\d+ChannelHeaderButton$/.test(b.id));
+                t.ok('seven desktop plugin buttons render >= 44x44 and hit-test cleanly', plugBtns.length === 7 && plugBtns.every((b) => b.hit && b.hit.centerOk && b.hit.leftOk && b.hit.rightOk), plugBtns);
+            }
+            if (k.vpKey === 'mobile-muted' && k.state === 'closed') {
+                const unmuteBtn = m.headerButtons.find((b) => String(b.id).includes('icon__mute'));
+                t.ok('muted mobile Unmute button has full 44x44 unclipped hit target', Boolean(unmuteBtn && unmuteBtn.rect.w >= 44 - TOLERANCE && unmuteBtn.rect.h >= 44 - TOLERANCE && unmuteBtn.hit && unmuteBtn.hit.centerOk && unmuteBtn.hit.leftOk && unmuteBtn.hit.rightOk), unmuteBtn);
+            }
             t.near('launcher width', m.launcher.rect.w, 44);
             t.near('launcher height', m.launcher.rect.h, 44);
             t.ok('launcher has no border', m.launcher.borders.every((b) => b === '0px'), m.launcher.borders);
@@ -641,7 +706,7 @@ async function runH01(browser, c) {
             t.near('theme trigger height', m.themeTrigger.rect.h, 44);
             t.ok('theme trigger has menu popup and localized label', m.themeTrigger.haspopup === 'menu' && /^Giao diện: (Sáng|Tối|Hệ thống)$/.test(m.themeTrigger.label || ''), m.themeTrigger);
             t.ok('tenant and channel title have computed nowrap and ellipsis', m.tenant && m.tenant.whiteSpace === 'nowrap' && m.tenant.textOverflow === 'ellipsis' && m.channelTitle && m.channelTitle.whiteSpace === 'nowrap' && m.channelTitle.textOverflow === 'ellipsis', {tenant: m.tenant, channelTitle: m.channelTitle});
-            if (k.tenantKey === 'long') {
+            if (k.tenantKey === 'long' || k.tenantKey === 'long7') {
                 t.ok('long tenant truncates with an ellipsis', m.tenant.scrollWidth > m.tenant.clientWidth && m.tenant.textOverflow === 'ellipsis' && m.tenant.overflow === 'hidden', m.tenant);
                 t.ok('long channel title truncates with an ellipsis', m.channelTitle.scrollWidth > m.channelTitle.clientWidth && m.channelTitle.textOverflow === 'ellipsis' && m.channelTitle.overflow === 'hidden', m.channelTitle);
                 if (k.vpKey === 'desktop') {

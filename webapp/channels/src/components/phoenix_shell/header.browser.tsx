@@ -34,6 +34,7 @@ type Scenario = {
     channelHeader: string;
     account: string;
     mode: ColorMode;
+    muted?: boolean;
     apps: Array<{appCode: string; label: string; state: 'ready' | 'provisioning'; launchUrl?: string}>;
     plugins: Array<{id: string; label: string}>;
     logoutUrl: string | null;
@@ -207,7 +208,7 @@ function buildInitialState() {
         mention_count: 0,
         mention_count_root: 0,
         msg_count_root: 10,
-        notify_props: {mark_unread: 'all', desktop: 'default', push: 'default', email: 'default'},
+        notify_props: {mark_unread: scenario.muted ? 'mention' : 'all', desktop: 'default', push: 'default', email: 'default'},
     };
 
     const headerButtons = scenario.plugins.map((p) => ({

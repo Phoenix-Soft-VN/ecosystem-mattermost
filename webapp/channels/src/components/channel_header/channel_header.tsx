@@ -16,7 +16,7 @@ import ChannelAttributeLabels from 'components/channel_attributes/channel_attrib
 import {ChannelLabelSurface} from 'components/common/hooks/useChannelLabels';
 import CustomStatusEmoji from 'components/custom_status/custom_status_emoji';
 import CustomStatusText from 'components/custom_status/custom_status_text';
-import {HeaderSlotContent, useHasHeaderSlots, useMobileHeaderSlot} from 'components/phoenix_shell/header_slots';
+import {HeaderSlotContent, useCompactChannelTools, useHasHeaderSlots, useMobileHeaderSlot} from 'components/phoenix_shell/header_slots';
 import PopoutButton from 'components/popout_button';
 import Timestamp from 'components/timestamp';
 import Tag from 'components/widgets/tag/tag';
@@ -382,9 +382,26 @@ class ChannelHeader extends React.PureComponent<Props> {
             );
         }
 
+        const rightTools = (
+            <>
+                <ChannelHeaderPlug
+                    channel={channel}
+                    channelMember={channelMember}
+                />
+                <CallButton/>
+                {canPopout() && !isChannelPopoutWindow() && (
+                    <PopoutButton
+                        className='channel-header__icon'
+                        onClick={this.popoutChannelView}
+                    />
+                )}
+                <ChannelInfoButton channel={channel}/>
+            </>
+        );
+
         return (
             <ChannelHeaderSlotAdapter
-                renderHeader={(inSlot) => (
+                renderHeader={(inSlot, compactTools) => (
                     <div
                         id='channel-header'
                         aria-label={ariaLabelChannelHeader}
@@ -453,18 +470,13 @@ class ChannelHeader extends React.PureComponent<Props> {
                                     </div>
                                 </div>
                             </div>
-                            <ChannelHeaderPlug
-                                channel={channel}
-                                channelMember={channelMember}
-                            />
-                            <CallButton/>
-                            {canPopout() && !isChannelPopoutWindow() && (
-                                <PopoutButton
-                                    className='channel-header__icon'
-                                    onClick={this.popoutChannelView}
-                                />
-                            )}
-                            <ChannelInfoButton channel={channel}/>
+                            {compactTools ? (
+                                <HeaderSlotContent name='utilities'>
+                                    <div className='phoenix-channel-utilities'>
+                                        {rightTools}
+                                    </div>
+                                </HeaderSlotContent>
+                            ) : rightTools}
                         </div>
                     </div>
                 )}
@@ -473,9 +485,10 @@ class ChannelHeader extends React.PureComponent<Props> {
     }
 }
 
-function ChannelHeaderSlotAdapter({renderHeader}: {renderHeader: (inSlot: boolean) => React.ReactElement}) {
+function ChannelHeaderSlotAdapter({renderHeader}: {renderHeader: (inSlot: boolean, compactTools: boolean) => React.ReactElement}) {
     const hasSlots = useHasHeaderSlots();
     const mobileSlotActive = useMobileHeaderSlot();
+    const [compactTools] = useCompactChannelTools();
     const isMobileView = useSelector((state: GlobalState) => Boolean(state?.views?.browser && getIsMobileView(state)));
     const inSlot = hasSlots && !isChannelPopoutWindow();
 
@@ -484,15 +497,15 @@ function ChannelHeaderSlotAdapter({renderHeader}: {renderHeader: (inSlot: boolea
     }
 
     if (!inSlot) {
-        return renderHeader(false);
+        return renderHeader(false, false);
     }
 
     return (
         <HeaderSlotContent
             name='channel'
-            fallback={renderHeader(false)}
+            fallback={renderHeader(false, false)}
         >
-            {renderHeader(true)}
+            {renderHeader(true, compactTools)}
         </HeaderSlotContent>
     );
 }

@@ -11,6 +11,8 @@ type HeaderSlotsContextValue = {
     containers: Record<HeaderSlot, HTMLDivElement>;
     counts: Record<HeaderSlot, number>;
     mobileChannelCount: number;
+    compactChannelTools: boolean;
+    setCompactChannelTools: (compact: boolean) => void;
     registerContent: (name: HeaderSlot) => () => void;
     registerMobileChannel: () => () => void;
 };
@@ -41,6 +43,7 @@ export function HeaderSlotsProvider({
     const [containers] = useState<Record<HeaderSlot, HTMLDivElement>>(createSlotContainers);
     const [counts, setCounts] = useState<Record<HeaderSlot, number>>({left: 0, channel: 0, utilities: 0});
     const [mobileChannelCount, setMobileChannelCount] = useState(0);
+    const [compactChannelTools, setCompactChannelTools] = useState(false);
 
     const registerContent = useCallback((name: HeaderSlot) => {
         setCounts((prev) => ({...prev, [name]: prev[name] + 1}));
@@ -61,9 +64,11 @@ export function HeaderSlotsProvider({
         containers,
         counts,
         mobileChannelCount,
+        compactChannelTools,
+        setCompactChannelTools,
         registerContent,
         registerMobileChannel,
-    }), [active, containers, counts, mobileChannelCount, registerContent, registerMobileChannel]);
+    }), [active, containers, counts, mobileChannelCount, compactChannelTools, registerContent, registerMobileChannel]);
 
     return (
         <HeaderSlotsContext.Provider value={value}>
@@ -158,4 +163,11 @@ export function useMobileHeaderSlot(register = false): boolean {
         return registerMobileChannel();
     }, [register, isActive, registerMobileChannel]);
     return Boolean(isActive && (ctx?.mobileChannelCount ?? 0) > 0);
+}
+
+const noopSetCompact = () => {};
+
+export function useCompactChannelTools(): [boolean, (compact: boolean) => void] {
+    const ctx = useContext(HeaderSlotsContext);
+    return [Boolean(ctx?.active && ctx.compactChannelTools), ctx?.setCompactChannelTools ?? noopSetCompact];
 }
