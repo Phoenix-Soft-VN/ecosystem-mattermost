@@ -1468,3 +1468,13 @@ Tổng 117 tests PASS. Một worker test tại mỗi repo vì đây là scope nh
 F11 mới sửa source, chưa commit/build/restart/deploy; container local hiện tại vẫn chạy assets trước F11. Đây là kiểm chứng unit/type/lint, chưa phải browser acceptance của bản selector mới. Các giới hạn Enterprise/backend/hosted trong báo cáo vẫn áp dụng. Patch base64 F8 chỉ mô tả phần cũ, không bao gồm F11.
 
 Rollback F11 riêng: khôi phục các diff F11 của `general.ts`, bốn kỳ vọng `general.test.ts` và Playbooks `src/license.ts`; xóa các file mới `general_phoenix.test.ts`, `phoenix_license.ts`, `phoenix_license.test.ts` cùng thiết kế F11 khi không cần giữ hồ sơ. Không dùng rollback F8 để thay cho rollback F11.
+
+## F12. Bỏ banner non-production — 2026-11-18
+
+Theo yêu cầu trực tiếp sau khi kiểm tra production, đặt `IsNonProduction=false` trong `model.NewPermissiveLicense`, getter Mattermost và getter Playbooks. Mục này thay thế lựa chọn cờ true ở F11; không đổi SKU, thời hạn, feature flags, Cloud hoặc quyền truy cập. Component announcement giữ nguyên nhưng không nhận cờ true từ selector Phoenix nữa.
+
+Check/spec đã chốt trước khi code: `docs/superpowers/2026-11-18-license-banner/design.md` (Mode: fast). Test model mới xác minh boolean và JSON false, SKU advanced. Test selector mặc định và đầu vào cũ cờ true đều nhận string false, input không bị mutate. Test render dùng component/selector thật cho raw true/false/thiếu cờ và đều không có banner.
+
+Kiểm chứng source: Mattermost Jest 3 suites/40 tests PASS (general, general_phoenix, non_production_license_bar); Playbooks Jest 3 suites/48 tests PASS (phoenix_license, license, hooks/license); `go test ./model -run '^TestPhoenixLicenseDoesNotAdvertiseNonProduction$' -count=1 -v` PASS (1 test, không DB). ESLint cho các file frontend sửa PASS; gofmt cho test Go. Không chạy lại full type-check hoặc các suite license upstream lệch ngữ nghĩa; giới hạn F11 giữ nguyên. Mutation: none (Mode: fast); trả cờ true sẽ làm check selector/render/model fail.
+
+Build/deploy và kiểm chứng production được ghi trong báo cáo release ở parent repository sau khi rollout. Rollback source F12: khôi phục ba giá trị cờ true và các expectation tương ứng; rollback runtime phải dùng image/checkpoint của release, không restore database tự động. Dữ liệu/quyền của tenant không thuộc thay đổi này.

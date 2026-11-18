@@ -7,67 +7,15 @@ import {renderWithContext} from 'tests/react_testing_utils';
 
 import NonProductionLicenseAnnouncementBar from './index';
 
-describe('components/announcement_bar/NonProductionLicenseAnnouncementBar', () => {
-    const initialState = {
-        entities: {
-            general: {
-                license: {
-                    IsLicensed: 'true',
-                    IsNonProduction: 'true',
-                },
-            },
-        },
-    };
-
-    it('should show banner when license is non-production', () => {
+describe('Phoenix non-production license announcement', () => {
+    it.each(['true', 'false', undefined])('does not render the banner when source IsNonProduction=%s', (flag) => {
+        const license = flag === undefined ? {IsLicensed: 'true'} : {IsLicensed: 'true', IsNonProduction: flag};
         const {container} = renderWithContext(
             <NonProductionLicenseAnnouncementBar/>,
-            initialState,
-        );
-
-        expect(container.querySelector('.announcement-bar')).not.toBeNull();
-        expect(container.textContent).toContain('Non-production license. Test or staging use only.');
-    });
-
-    it('should not show banner when license is not non-production', () => {
-        const state = JSON.parse(JSON.stringify(initialState));
-        state.entities.general.license.IsNonProduction = 'false';
-
-        const {container} = renderWithContext(
-            <NonProductionLicenseAnnouncementBar/>,
-            state,
+            {entities: {general: {license}}},
         );
 
         expect(container.querySelector('.announcement-bar')).toBeNull();
-    });
-
-    it('should not show banner when the flag is absent from the license', () => {
-        const state = JSON.parse(JSON.stringify(initialState));
-        delete state.entities.general.license.IsNonProduction;
-
-        const {container} = renderWithContext(
-            <NonProductionLicenseAnnouncementBar/>,
-            state,
-        );
-
-        expect(container.querySelector('.announcement-bar')).toBeNull();
-    });
-
-    it('should not be dismissable', () => {
-        const {container} = renderWithContext(
-            <NonProductionLicenseAnnouncementBar/>,
-            initialState,
-        );
-
-        expect(container.querySelector('.announcement-bar__close')).toBeNull();
-    });
-
-    it('should have advisor type', () => {
-        const {container} = renderWithContext(
-            <NonProductionLicenseAnnouncementBar/>,
-            initialState,
-        );
-
-        expect(container.querySelector('.announcement-bar.announcement-bar-advisor')).not.toBeNull();
+        expect(container.textContent).not.toContain('Non-production license. Test or staging use only.');
     });
 });

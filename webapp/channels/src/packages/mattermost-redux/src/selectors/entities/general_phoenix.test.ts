@@ -21,7 +21,7 @@ describe('Phoenix getLicense', () => {
             Users: '1000000',
             ExpiresAt: '4102444800000',
             IsTrial: 'false',
-            IsNonProduction: 'true',
+            IsNonProduction: 'false',
             Cloud: 'false',
         });
         expect(Object.values(license).every((value) => typeof value === 'string')).toBe(true);
@@ -36,6 +36,7 @@ describe('Phoenix getLicense', () => {
             ExpiresAt: '1',
             LDAP: 'false',
             Compliance: 'false',
+            IsNonProduction: 'true',
         });
         const state = stateWithLicense(input);
 
@@ -45,6 +46,7 @@ describe('Phoenix getLicense', () => {
             ExpiresAt: '4102444800000',
             LDAP: 'true',
             Compliance: 'true',
+            IsNonProduction: 'false',
         });
         expect(isFreeEdition(state)).toBe(false);
         expect(input).toEqual({
@@ -53,6 +55,7 @@ describe('Phoenix getLicense', () => {
             ExpiresAt: '1',
             LDAP: 'false',
             Compliance: 'false',
+            IsNonProduction: 'true',
         });
     });
 

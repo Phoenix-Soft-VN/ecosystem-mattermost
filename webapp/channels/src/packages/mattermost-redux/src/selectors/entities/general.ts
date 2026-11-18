@@ -134,7 +134,7 @@ export const getLicense: (state: GlobalState) => ClientLicense = createSelector(
         StartsAt: '1',
         ExpiresAt: '4102444800000',
         IsTrial: 'false',
-        IsNonProduction: 'true',
+        IsNonProduction: 'false',
         IsGovSku: license?.IsGovSku ?? 'false',
         AddOns: license?.AddOns ?? '',
         Cloud: license?.Cloud ?? 'false',

@@ -444,7 +444,7 @@ func NewPermissiveLicense() *License {
 		Features:        features,
 		SkuName:         "Enterprise Advanced (Phoenix Experimental)",
 		SkuShortName:    LicenseShortSkuEnterpriseAdvanced,
-		IsNonProduction: true,
+		IsNonProduction: false,
 	}
 }
 
