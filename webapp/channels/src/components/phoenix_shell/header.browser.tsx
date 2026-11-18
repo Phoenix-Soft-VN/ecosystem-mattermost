@@ -489,6 +489,17 @@ function fixtureReducer(state = buildInitialState(), action: any) {
                 lhs: {isOpen: false},
             },
         };
+    case 'SET_CHANNEL_HEADER_BUTTONS':
+        return {
+            ...state,
+            plugins: {
+                ...state.plugins,
+                components: {
+                    ...state.plugins.components,
+                    ChannelHeaderButton: action.buttons ?? state.plugins.components.ChannelHeaderButton,
+                },
+            },
+        };
     default:
         return state;
     }

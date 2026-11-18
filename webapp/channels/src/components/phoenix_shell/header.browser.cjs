@@ -618,7 +618,21 @@ function measureLayout() {
             clientWidth: panel.clientWidth,
             modes: radios.map((r) => ({rect: rect(r), borders: borders(r), corners: corners(r), label: r.textContent})),
             items: items.map((i) => ({rect: rect(i), truncated: truncated(i)})),
-            utilButtons: utilButtons.map((b) => ({id: b.id || b.getAttribute('aria-label') || b.textContent, rect: rect(b)})),
+            utilButtons: utilButtons.map((b) => {
+                const r = rect(b);
+                let hit = null;
+                if (r && r.w > 0 && r.h > 0) {
+                    const cx = (r.l + r.r) / 2;
+                    const cy = (r.t + r.b) / 2;
+                    const cEl = document.elementFromPoint(cx, cy);
+                    const nameEl = (el) => (el ? (el.id || el.getAttribute('aria-label') || el.className || el.tagName) : null);
+                    hit = {
+                        centerOk: Boolean(cEl && b.contains(cEl)),
+                        centerHit: nameEl(cEl),
+                    };
+                }
+                return {id: b.id || b.getAttribute('aria-label') || b.textContent, rect: r, hit};
+            }),
             reachable: [...radios, ...items, ...utilButtons].filter(Boolean).map((el) => reach(el)),
         };
         panel.scrollTop = 0;
@@ -749,7 +763,81 @@ async function runH01(browser, c) {
         }
         c.push(...t.rows);
     }
-    return {metrics, cases: cases.length};
+
+    // Dynamic post-settle plugin growth regression (1 -> 12 plugins at 1440x900 without resize or parent revalidation).
+    {
+        const label = 'long-late12/desktop/light/dynamic';
+        const t = collector('H01', {label});
+        const {page, context, problems} = await openPage(browser, DESKTOP, {...SCENARIOS.long, plugins: [{id: 'plug-1', label: 'Jira'}], mode: 'light'}, 'light');
+        try {
+            const mBefore = await page.evaluate(measureLayout);
+            t.ok('settled 1-plugin desktop has no overflow trigger and all visible targets hit-test cleanly',
+                mBefore.utilitiesTrigger === null &&
+                mBefore.buttonOverlaps.length === 0 &&
+                mBefore.headerButtons.every((b) => b.hit && b.hit.centerOk && b.hit.leftOk && b.hit.rightOk),
+                {utilitiesTrigger: mBefore.utilitiesTrigger, overlaps: mBefore.buttonOverlaps},
+            );
+
+            await page.evaluate(() => {
+                const store = window.__phoenixFixtureStore;
+                const st = store.getState();
+                const base = st.plugins.components.ChannelHeaderButton[0];
+                const twelve = Array.from({length: 12}, (_, i) => ({
+                    ...base,
+                    id: `late-${i + 1}`,
+                    pluginId: `late-${i + 1}`,
+                    tooltipText: `Plugin Late ${i + 1}`,
+                    dropdownText: `Plugin Late ${i + 1}`,
+                }));
+                st.plugins = {
+                    ...st.plugins,
+                    components: {
+                        ...st.plugins.components,
+                        ChannelHeaderButton: twelve,
+                    },
+                };
+                store.dispatch({type: 'CLOSE_LHS'});
+            });
+
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+            const mAfter2Raf = await page.evaluate(measureLayout);
+            const lateButtons2Raf = mAfter2Raf.headerButtons.filter((b) => /^late-\d+ChannelHeaderButton$/.test(b.id));
+            t.ok('after 2 rAF following store-only 12-plugin update: Tiện ích appears and all 12 plugins + header controls hit-test cleanly without overlap',
+                Boolean(mAfter2Raf.utilitiesTrigger) &&
+                lateButtons2Raf.length === 12 &&
+                mAfter2Raf.buttonOverlaps.length === 0 &&
+                mAfter2Raf.headerButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE && b.hit && b.hit.centerOk && b.hit.leftOk && b.hit.rightOk),
+                {utilitiesTrigger: mAfter2Raf.utilitiesTrigger, lateCount: lateButtons2Raf.length, overlaps: mAfter2Raf.buttonOverlaps},
+            );
+
+            await page.waitForTimeout(1000);
+            const mAfter1000ms = await page.evaluate(measureLayout);
+            const lateButtons1000ms = mAfter1000ms.headerButtons.filter((b) => /^late-\d+ChannelHeaderButton$/.test(b.id));
+            t.ok('after 1000ms without resize: Tiện ích and all 12 plugins + header controls still hit-test cleanly without overlap',
+                Boolean(mAfter1000ms.utilitiesTrigger) &&
+                lateButtons1000ms.length === 12 &&
+                mAfter1000ms.buttonOverlaps.length === 0 &&
+                mAfter1000ms.headerButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE && b.hit && b.hit.centerOk && b.hit.leftOk && b.hit.rightOk),
+                {utilitiesTrigger: mAfter1000ms.utilitiesTrigger, lateCount: lateButtons1000ms.length, overlaps: mAfter1000ms.buttonOverlaps},
+            );
+
+            await page.click(TRIGGER.utilities);
+            await page.waitForSelector('[data-phoenix-popover="utilities"]');
+            const mUtilitiesOpen = await page.evaluate(measureLayout);
+            const expectedGlobalIds = ['searchFormContainer', 'Help', 'Recent mentions', 'Saved messages', 'Settings', 'userAccountMenuButton'];
+            const utilBtns = mUtilitiesOpen.panel ? mUtilitiesOpen.panel.utilButtons : [];
+            t.ok('Search, Help, Recent mentions, Saved messages, Settings, and Account inside Tiện ích hit-test to themselves and never hit late plugins or info',
+                expectedGlobalIds.every((id) => utilBtns.some((b) => b.id === id && b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE && b.hit && b.hit.centerOk)),
+                utilBtns,
+            );
+            t.ok('page has no script or console errors during dynamic plugin growth', problems.length === 0, problems);
+            metrics.push({case: label, ...mAfter1000ms, panel: mUtilitiesOpen.panel});
+        } finally {
+            await context.close();
+        }
+        c.push(...t.rows);
+    }
+    return {metrics, cases: cases.length + 1};
 }
 
 // ---------- H02 ----------

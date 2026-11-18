@@ -671,12 +671,7 @@ function PhoenixHeaderBar({
     const effectiveCompactUtilities = isCompactUtilities || overflowUtilities;
     const showOverflowUtilities = effectiveCompactUtilities && hasUtilities;
 
-    useEffect(() => {
-        setOverflowUtilities(false);
-        setCompactChannelTools(false);
-    }, [viewportWidth, setCompactChannelTools]);
-
-    useLayoutEffect(() => {
+    const checkOverflow = useCallback(() => {
         const el = headerRef.current;
         if (!el || el.clientWidth === 0) {
             return;
@@ -690,7 +685,45 @@ function PhoenixHeaderBar({
                 setCompactChannelTools(true);
             }
         }
+    }, [effectiveCompactUtilities, compactChannelTools, setCompactChannelTools]);
+
+    useEffect(() => {
+        setOverflowUtilities(false);
+        setCompactChannelTools(false);
+    }, [viewportWidth, setCompactChannelTools]);
+
+    useLayoutEffect(() => {
+        checkOverflow();
     });
+
+    useEffect(() => {
+        const el = headerRef.current;
+        if (!el) {
+            return undefined;
+        }
+        const mutationObserver = new MutationObserver(() => {
+            checkOverflow();
+        });
+        mutationObserver.observe(el, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
+        let resizeObserver: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            resizeObserver = new ResizeObserver(() => {
+                checkOverflow();
+            });
+            resizeObserver.observe(el);
+            for (const slot of Array.from(el.querySelectorAll<HTMLElement>('[data-header-slot]'))) {
+                resizeObserver.observe(slot);
+            }
+        }
+        return () => {
+            mutationObserver.disconnect();
+            resizeObserver?.disconnect();
+        };
+    }, [checkOverflow]);
 
     return (
         <header
