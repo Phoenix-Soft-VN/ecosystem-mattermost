@@ -7,12 +7,15 @@
 // modal/store boundaries are replaced by in-page doubles.
 // Not part of the product bundle and not authenticated production evidence.
 
+import '@mattermost/compass-icons/css/compass-icons.css';
 import React, {useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import {IntlProvider} from 'react-intl';
 import {Provider, useDispatch, useSelector} from 'react-redux';
 import {MemoryRouter} from 'react-router-dom';
 import {legacy_createStore as createStore} from 'redux';
+
+import entitiesReducer from 'mattermost-redux/reducers/entities';
 
 import ChannelHeader from 'components/channel_header';
 import GlobalHeader from 'components/global_header/global_header';
@@ -46,6 +49,7 @@ declare global {
         phoenixCalls?: Call[];
         phoenixPluginCalls?: PluginCall[];
         phoenixDispatched?: Array<{type: string; [key: string]: unknown}>;
+        __phoenixFixtureStore?: unknown;
         chatEscapeSeen?: number;
     }
 }
@@ -63,7 +67,6 @@ const scenario: Scenario = {
     ],
     plugins: [
         {id: 'plug-1', label: 'Jira'},
-        {id: 'plug-2', label: 'GitLab'},
     ],
     logoutUrl: 'https://auth.phoenixsoft.vn/oauth2/logout',
     palette: 'plan',
@@ -151,6 +154,9 @@ window.fetch = async (input, init) => {
         version += 1;
         return reply({mode, density: 'comfortable', version}, {ETag: `"${version}"`});
     }
+    if (url.includes('/api/v4/')) {
+        return reply({});
+    }
     return new Response('{}', {status: 404});
 };
 
@@ -201,7 +207,7 @@ function buildInitialState() {
         mention_count: 0,
         mention_count_root: 0,
         msg_count_root: 10,
-        notify_props: {mark_unread: 'mention', desktop: 'default', push: 'default', email: 'default'},
+        notify_props: {mark_unread: 'all', desktop: 'default', push: 'default', email: 'default'},
     };
 
     const headerButtons = scenario.plugins.map((p) => ({
@@ -234,9 +240,13 @@ function buildInitialState() {
         },
     }));
 
+    const baseEntities = entitiesReducer(undefined, {type: '@@INIT'} as any);
+
     return {
         entities: {
+            ...baseEntities,
             general: {
+                ...baseEntities.general,
                 config: {
                     EnableFileAttachments: 'true',
                     EnableCustomEmoji: 'false',
@@ -256,13 +266,13 @@ function buildInitialState() {
                 },
             },
             users: {
+                ...baseEntities.users,
                 currentUserId: USER_ID,
                 profiles: {[USER_ID]: userObj},
                 statuses: {[USER_ID]: 'online'},
-                mySessions: [],
-                lastActivity: {},
             },
             teams: {
+                ...baseEntities.teams,
                 currentTeamId: TEAM_ID,
                 teams: {
                     [TEAM_ID]: {
@@ -287,6 +297,7 @@ function buildInitialState() {
                 },
             },
             channels: {
+                ...baseEntities.channels,
                 currentChannelId: CHANNEL_ID,
                 channels: {[CHANNEL_ID]: channelObj},
                 channelsInTeam: {[TEAM_ID]: new Set([CHANNEL_ID])},
@@ -304,8 +315,6 @@ function buildInitialState() {
                     [CHANNEL_ID]: {total: 10, root: 10},
                 },
                 roles: {[CHANNEL_ID]: new Set(['channel_user'])},
-                joinRequests: {},
-                restrictedDMs: {},
             },
             roles: {
                 roles: {
@@ -333,45 +342,6 @@ function buildInitialState() {
                         ],
                     },
                 },
-            },
-            preferences: {
-                myPreferences: {},
-            },
-            apps: {
-                main: {bindings: [], forms: {}},
-                rhs: {bindings: [], forms: {}},
-                pluginEnabled: false,
-            },
-            cloud: {
-                limits: {limitsLoaded: false, limits: {}},
-                subscription: {},
-                errors: {},
-            },
-            channelBookmarks: {
-                byChannelId: {},
-            },
-            sharedChannels: {
-                remotes: {},
-            },
-            emojis: {
-                customEmoji: {},
-                nonExistentEmoji: new Set(),
-            },
-            posts: {
-                posts: {},
-            },
-            threads: {
-                counts: {},
-                countsIncludingDirect: {},
-            },
-            typing: {},
-            admin: {
-                prevTrialLicense: {},
-            },
-            usage: {
-                files: {totalStorage: 0, totalStorageLoaded: true},
-                messages: {history: 0, historyLoaded: true},
-                teams: {active: 1, cloudArchived: 0, teamsLoaded: true},
             },
         },
         views: {
@@ -449,6 +419,7 @@ function fixtureReducer(state = buildInitialState(), action: any) {
     }
     switch (action?.type) {
     case 'PRODUCT_SWITCHER_OPEN':
+    case 'SET_PRODUCT_SWITCHER_OPEN':
         return {
             ...state,
             views: {
@@ -530,6 +501,7 @@ store.dispatch = ((action: any) => {
     }
     return originalDispatch(action);
 }) as typeof store.dispatch;
+window.__phoenixFixtureStore = store;
 
 function FixtureWorkspace() {
     const dispatch = useDispatch();

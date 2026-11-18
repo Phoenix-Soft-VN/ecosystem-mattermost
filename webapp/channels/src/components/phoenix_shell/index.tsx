@@ -438,6 +438,37 @@ export default function PhoenixShell({children}: Props) {
         }
     }, [isCompactUtilities]);
 
+    // Native DOM keydown/focusout listeners on controlsRef ensure portaled utilities
+    // children (which live under <main> in the React tree but inside controlsRef in the DOM)
+    // still close the popover on Escape/blur and stop Escape before document shortcuts.
+    useEffect(() => {
+        const el = controlsRef.current;
+        if (!el || !openPopover) {
+            return undefined;
+        }
+        const onNativeKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && openRef.current) {
+                event.stopPropagation();
+                closePopover(true);
+            }
+        };
+        const onNativeFocusOut = (event: FocusEvent) => {
+            const next = event.relatedTarget as Node | null;
+            if (openRef.current && next && !el.contains(next)) {
+                if (openRef.current === 'utilities' && isInExternalMenuPortal(next)) {
+                    return;
+                }
+                closePopover(false);
+            }
+        };
+        el.addEventListener('keydown', onNativeKeyDown);
+        el.addEventListener('focusout', onNativeFocusOut);
+        return () => {
+            el.removeEventListener('keydown', onNativeKeyDown);
+            el.removeEventListener('focusout', onNativeFocusOut);
+        };
+    }, [openPopover, closePopover]);
+
     const onControlsKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (event.key === 'Escape' && openRef.current) {
             // Handled here: the Chat shortcuts behind the header must not also see it.

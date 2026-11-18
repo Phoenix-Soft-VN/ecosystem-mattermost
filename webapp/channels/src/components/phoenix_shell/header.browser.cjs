@@ -65,23 +65,49 @@ const SOURCES = [
 // Fixture-only replacements of heavy non-header boundaries (store singleton, modals, markdown).
 // All header owners, menus, triggers, slots, client.ts, theme.ts, and index.tsx are 100% real.
 const STUBS = {
-    'redux_store.js': 'export default {dispatch(a) { return a; }, getState() { return {}; }};\n',
+    'redux_store.js': [
+        'export default {',
+        '    dispatch(a) { return window.__phoenixFixtureStore ? window.__phoenixFixtureStore.dispatch(a) : a; },',
+        '    getState() { return window.__phoenixFixtureStore ? window.__phoenixFixtureStore.getState() : {views: {browser: {}}, entities: {general: {config: {}, license: {}}, users: {profiles: {}}, teams: {teams: {}}, channels: {channels: {}}, preferences: {myPreferences: {}}}}; },',
+        '    subscribe(fn) { return window.__phoenixFixtureStore ? window.__phoenixFixtureStore.subscribe(fn) : () => {}; },',
+        '};',
+        '',
+    ].join('\n'),
     'initial_loading_screen.js': 'export default {stop() {}};\n',
+    'emotion_styled.js': [
+        'import React from "react";',
+        'export default function styled(Component, opts) {',
+        '    const shouldForward = opts && opts.shouldForwardProp;',
+        '    return function() {',
+        '        return React.forwardRef(function Styled(props, ref) {',
+        '            if (!shouldForward) return React.createElement(Component, {...props, ref});',
+        '            const next = {};',
+        '            for (const [k, v] of Object.entries(props)) {',
+        '                if (shouldForward(k)) next[k] = v;',
+        '            }',
+        '            return React.createElement(Component, {...next, ref});',
+        '        });',
+        '    };',
+        '}',
+        '',
+    ].join('\n'),
     'empty_modal.js': [
         'export default function EmptyModal() { return null; }',
         'export const CustomizeYourExperienceTour = () => null;',
+        'export const CompleteYourProfileTour = () => null;',
         'export const useShowOnboardingTutorialStep = () => false;',
         'export const OnboardingTourSteps = {CUSTOMIZE_EXPERIENCE: 0};',
         'export const OnboardingTourStepsForGuestUsers = {CUSTOMIZE_EXPERIENCE: 0};',
         'export const OnboardingTaskCategory = "onboarding";',
-        'export const OnboardingTasksName = {VISIT_SYSTEM_CONSOLE: "visit_system_console"};',
-        'export const TaskNameMapToSteps = {visit_system_console: {FINISHED: 1}};',
+        'export const OnboardingTasksName = {VISIT_SYSTEM_CONSOLE: "visit_system_console", COMPLETE_YOUR_PROFILE: "complete_your_profile"};',
+        'export const TaskNameMapToSteps = {visit_system_console: {STARTED: 1, FINISHED: 2}, complete_your_profile: {STARTED: 1, FINISHED: 2}};',
         'export const useHandleOnBoardingTaskData = () => () => {};',
         '',
     ].join('\n'),
     'markdown_stub.js': [
+        'import React from "react";',
         'export default function Markdown(props) {',
-        '    return props && props.message ? props.message : null;',
+        '    return React.createElement("p", {className: "markdown__paragraph-inline"}, props && props.message);',
         '}',
         '',
     ].join('\n'),
@@ -218,7 +244,7 @@ function webpackConfig() {
                 'components/tours/onboarding_tour$': stub('empty_modal.js'),
                 'components/onboarding_tasks$': stub('empty_modal.js'),
                 'components/app_bar/new_channel_with_board_tour_tip$': stub('empty_modal.js'),
-                '@emotion/styled$': require.resolve('styled-components', {paths: [WEBAPP, CHANNELS]}),
+                '@emotion/styled$': stub('emotion_styled.js'),
                 'mattermost-redux': path.join(CHANNELS, 'src', 'packages', 'mattermost-redux', 'src'),
                 '@mattermost/shared': path.join(WEBAPP, 'platform', 'shared', 'src'),
                 '@mattermost/types': path.join(WEBAPP, 'platform', 'types', 'src'),
@@ -315,6 +341,8 @@ function resolvePlaywright() {
 
 const TYPES = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.png': 'image/png', '.svg': 'image/svg+xml', '.gif': 'image/gif', '.jpg': 'image/jpeg', '.eot': 'application/vnd.ms-fontobject'};
 
+const EMPTY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+
 // Serves the prepared bundle on an owned loopback port. A busy port is an error: nothing
 // else is ever stopped to free it.
 function serve() {
@@ -323,6 +351,14 @@ function serve() {
             const url = new URL(req.url, 'http://x');
             if (url.pathname === '/favicon.ico') {
                 res.writeHead(204).end();
+                return;
+            }
+            if (url.pathname.startsWith('/api/v4/')) {
+                if (url.pathname.endsWith('/image')) {
+                    res.writeHead(200, {'Content-Type': 'image/png', 'Cache-Control': 'no-store'}).end(EMPTY_PNG);
+                } else {
+                    res.writeHead(200, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}).end('{}');
+                }
                 return;
             }
             const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname).replace(/^\/+/, '');
@@ -368,7 +404,13 @@ async function openPage(browser, viewport, scenario = {}, colorScheme = 'light')
         window.phoenixFixture = s;
     }, scenario);
     await page.goto(`http://${HOST}:${PORT}/`);
-    await page.waitForSelector('[data-testid="phoenix-header"]', {timeout: 15000});
+    try {
+        await page.waitForSelector('[data-testid="phoenix-header"]', {timeout: 15000});
+    } catch (e) {
+        const html = await page.evaluate(() => document.body.innerHTML.slice(0, 500));
+        await context.close();
+        throw new Error(`${e.message}; problems=${JSON.stringify(problems)}; html=${JSON.stringify(html)}`);
+    }
     await page.evaluate(() => document.fonts.ready);
     return {page, context, problems};
 }
@@ -493,7 +535,7 @@ function measureLayout() {
         composer: rect(q('#fixture-composer')),
         tenant: truncated(q('.phoenix-shell__tenant', header)),
         channelTitle: truncated(q('#channelHeaderTitle', header)),
-        channelDesc: truncated(q('.header-description__text > p, .header-description__text', header)),
+        channelDesc: truncated(q('.header-description__text p.markdown__paragraph-inline', header) || q('.header-description__text', header)),
         launcher: {
             rect: rect(launcher),
             borders: borders(launcher),
@@ -822,35 +864,43 @@ async function runH02(browser, c) {
                     // Product switcher menu
                     await page.click('#product_switch_menu');
                     await page.waitForSelector('#product-switcher-menu-dropdown');
-                    const productItems = await page.evaluate(() => Array.from(document.querySelectorAll('#product-switcher-menu-dropdown .MenuItem')).map((el) => (el.textContent || '').trim()));
+                    const productItems = await page.evaluate(() => Array.from(document.querySelectorAll('#product-switcher-menu-dropdown [role="menuitem"], #product-switcher-menu-dropdown .MenuItem')).map((el) => (el.textContent || '').trim()));
                     t.ok('product switcher menu opens with Channels and Boards', productItems.some((x) => x.includes('Channels')) && productItems.some((x) => x.includes('Boards')), productItems);
                     await page.click('#product_switch_menu');
 
-                    // Channel dropdown menu and plugin action
-                    await page.click('#channelHeaderDropdownButton');
-                    await page.waitForSelector('#channelHeaderDropdownMenu');
-                    const channelMenuOpen = await page.evaluate(() => Boolean(document.querySelector('#channelHeaderDropdownMenu')));
-                    t.ok('channel dropdown menu opens on click', channelMenuOpen);
-                    if (vpKey === 'mobile') {
-                        await page.click('#mobileChannelHeaderItemmobile-plug-1');
-                    } else {
+                    if (vpKey === 'desktop') {
+                        // Desktop channel dropdown menu, plugin button, and UserAccountMenu popover
+                        await page.click('#channelHeaderDropdownButton');
+                        await page.waitForSelector('#channelHeaderDropdownMenu');
+                        const channelMenuOpen = await page.evaluate(() => Boolean(document.querySelector('#channelHeaderDropdownMenu')));
+                        t.ok('channel dropdown menu opens on click', channelMenuOpen);
                         await page.keyboard.press('Escape');
+                        await until(page, 'close-channel-menu', () => !document.querySelector('#channelHeaderDropdownMenu'));
                         await page.click('#plug-1ChannelHeaderButton');
-                    }
-                    const plugCalls = await page.evaluate(() => window.phoenixPluginCalls || []);
-                    t.ok('plugin action fires callback with channel id', plugCalls.length >= 1 && plugCalls[0].id === 'plug-1' && plugCalls[0].channelId === 'channel-1', plugCalls);
+                        const plugCalls = await page.evaluate(() => window.phoenixPluginCalls || []);
+                        t.ok('plugin action fires callback with channel id', plugCalls.length >= 1 && plugCalls[0].id === 'plug-1' && plugCalls[0].channelId === 'channel-1', plugCalls);
 
-                    // Global UserAccountMenu
-                    if (vpKey === 'mobile') {
+                        await page.click('#userAccountMenuButton');
+                        await page.waitForSelector('#userAccountMenu');
+                        const userMenuText = await page.evaluate(() => (document.querySelector('#userAccountMenu')?.textContent || ''));
+                        t.ok('native UserAccountMenu opens with status, profile, and Log out', userMenuText.includes('Online') && userMenuText.includes('Profile') && userMenuText.includes('Log out'), userMenuText);
+                        await page.keyboard.press('Escape');
+                        await until(page, 'close-user-menu', () => !document.querySelector('#userAccountMenu'));
+                    } else {
+                        // Mobile channel dropdown modal trigger, utilities overflow plugin button, and UserAccountMenu modal trigger
+                        await page.click('#channelHeaderDropdownButton');
+                        const channelModalDispatched = await page.evaluate(() => (window.phoenixDispatched || []).some((a) => a.type === 'MODAL_OPEN' && a.modalId === 'channelHeaderDropdownMenu'));
+                        t.ok('channel dropdown menu opens on click', channelModalDispatched);
+
                         await page.click(TRIGGER.utilities);
                         await page.waitForSelector('[data-phoenix-popover="utilities"]');
-                    }
-                    await page.click('#userAccountMenuButton');
-                    await page.waitForSelector('#userAccountMenu');
-                    const userMenuText = await page.evaluate(() => (document.querySelector('#userAccountMenu')?.textContent || ''));
-                    t.ok('native UserAccountMenu opens with status, profile, and Log out', userMenuText.includes('Online') && userMenuText.includes('Profile') && userMenuText.includes('Log out'), userMenuText);
-                    await page.keyboard.press('Escape');
-                    if (vpKey === 'mobile') {
+                        await page.click('.phoenix-mobile-utilities li.flex-parent--center button.navbar-right__icon');
+                        const plugCalls = await page.evaluate(() => window.phoenixPluginCalls || []);
+                        t.ok('plugin action fires callback with channel id', plugCalls.length >= 1 && plugCalls[0].id === 'plug-1' && plugCalls[0].channelId === 'channel-1', plugCalls);
+
+                        await page.click('#userAccountMenuButton');
+                        const userModalDispatched = await page.evaluate(() => (window.phoenixDispatched || []).some((a) => a.type === 'MODAL_OPEN' && a.modalId === 'userAccountMenu'));
+                        t.ok('native UserAccountMenu opens with status, profile, and Log out', userModalDispatched);
                         await page.keyboard.press('Escape');
                         await until(page, 'close-utilities-after-account', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
                     }
