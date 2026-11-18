@@ -1,6 +1,6 @@
 // Copyright (c) Phoenix-Soft-VN. See LICENSE.txt.
 
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useId, useRef, useState} from 'react';
 import {UserTypes} from 'mattermost-redux/action_types';
 import store from 'stores/redux_store';
 import InitialLoadingScreen from 'components/initial_loading_screen';
@@ -17,6 +17,8 @@ type Phase =
     | {name: 'inactive'} // the native server does not run the Phoenix boundary (development builds)
     | {name: 'error'; error: ShellError}
     | {name: 'ready'; snapshot: ShellSnapshot; nav: Navigation | null; logoutUrl: string | null};
+
+type PopoverId = 'apps' | 'account';
 
 const REVALIDATE_MS = 5000;
 const MODES: Array<{value: ColorMode; label: string}> = [
@@ -62,12 +64,54 @@ function initials(value: string | undefined): string {
     return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'P';
 }
 
+function LauncherIcon() {
+    return (
+        <svg
+            viewBox='0 0 24 24'
+            width='1em'
+            height='1em'
+            aria-hidden='true'
+            focusable='false'
+            fill='currentColor'
+        >
+            {[6, 12, 18].flatMap((y) => [6, 12, 18].map((x) => (
+                <circle
+                    key={`${x}-${y}`}
+                    cx={x}
+                    cy={y}
+                    r='1.6'
+                />
+            )))}
+        </svg>
+    );
+}
+
+// Decorative: the account trigger and panel carry the name for assistive technology.
+function Avatar({url, name}: {url: string | null | undefined; name: string}) {
+    return safeHttps(url || undefined) ? (
+        <img
+            className='phoenix-shell__avatar'
+            src={url as string}
+            alt=''
+        />
+    ) : <span className='phoenix-shell__account-monogram' aria-hidden='true'>{initials(name)}</span>;
+}
+
 type Props = {children: React.ReactNode};
 
 export default function PhoenixShell({children}: Props) {
     const [phase, setPhase] = useState<Phase>({name: 'loading'});
     const [prefersDark, setPrefersDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
-    const [menuOpen, setMenuOpen] = useState(false);
+    const [openPopover, setOpenPopover] = useState<PopoverId | null>(null);
+    const openRef = useRef<PopoverId | null>(null);
+    const controlsRef = useRef<HTMLDivElement>(null);
+    const triggerRefs = useRef<Record<PopoverId, HTMLButtonElement | null>>({apps: null, account: null});
+    const restoreTimer = useRef<number | undefined>(undefined);
+    const choiceQueue = useRef<Promise<void>>(Promise.resolve());
+    const appsPanelId = useId();
+    const accountPanelId = useId();
+    const accountDescriptionId = useId();
+    const modesLabelId = useId();
     const navTag = useRef<string | null>(null);
     const preferenceTag = useRef<string | null>(null);
     const prevTenant = useRef<string | null>(null);
@@ -162,6 +206,137 @@ export default function PhoenixShell({children}: Props) {
         }
     }, []);
 
+    // Requests run in order so a quick second keyboard selection never carries a stale ETag.
+    const select = useCallback((value: ColorMode) => {
+        const run = () => choose(value);
+        choiceQueue.current = choiceQueue.current.then(run, run);
+    }, [choose]);
+
+    const focusTrigger = useCallback((id: PopoverId) => {
+        const trigger = triggerRefs.current[id];
+        if (trigger?.isConnected) {
+            trigger.focus({preventScroll: true});
+        }
+    }, []);
+
+    const closePopover = useCallback((restoreFocus: boolean) => {
+        const current = openRef.current;
+        if (!current) {
+            return;
+        }
+        openRef.current = null;
+        setOpenPopover(null);
+        if (restoreFocus) {
+            focusTrigger(current);
+        }
+    }, [focusTrigger]);
+
+    const togglePopover = useCallback((id: PopoverId) => {
+        if (openRef.current === id) {
+            closePopover(true);
+            return;
+        }
+        openRef.current = id;
+        setOpenPopover(id);
+    }, [closePopover]);
+
+    // A newly opened panel takes keyboard focus; the previous trigger never gets it back.
+    useEffect(() => {
+        if (!openPopover) {
+            return;
+        }
+        const panel = controlsRef.current?.querySelector<HTMLElement>(`[data-phoenix-popover="${openPopover}"]`);
+        const target = panel?.querySelector<HTMLElement>(openPopover === 'account' ? '[role="radio"][tabindex="0"]' : '[role="menuitem"]');
+        (target ?? panel)?.focus({preventScroll: true});
+    }, [openPopover]);
+
+    // An outside press closes the open panel; both triggers keep their own click handling.
+    useEffect(() => {
+        if (!openPopover) {
+            return undefined;
+        }
+        const onPointerDown = (event: MouseEvent) => {
+            const open = openRef.current;
+            const target = event.target as Node | null;
+            if (!open || !target) {
+                return;
+            }
+            const panel = controlsRef.current?.querySelector(`[data-phoenix-popover="${open}"]`);
+            if (panel?.contains(target) || triggerRefs.current.apps?.contains(target) || triggerRefs.current.account?.contains(target)) {
+                return;
+            }
+            closePopover(false);
+
+            // The press moves focus to a focusable target after this handler runs, so only
+            // a press that leaves focus nowhere returns it to the trigger.
+            window.clearTimeout(restoreTimer.current);
+            restoreTimer.current = window.setTimeout(() => {
+                if (!document.activeElement || document.activeElement === document.body) {
+                    focusTrigger(open);
+                }
+            }, 0);
+        };
+        document.addEventListener('mousedown', onPointerDown);
+        return () => document.removeEventListener('mousedown', onPointerDown);
+    }, [openPopover, closePopover, focusTrigger]);
+
+    useEffect(() => () => window.clearTimeout(restoreTimer.current), []);
+
+    // Panels exist only in the ready branch; a failed revalidation must not leave one armed.
+    useEffect(() => {
+        if (phase.name !== 'ready' && openRef.current) {
+            openRef.current = null;
+            setOpenPopover(null);
+        }
+    }, [phase.name]);
+
+    const onControlsKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Escape' && openRef.current) {
+            // Handled here: the Chat shortcuts behind the header must not also see it.
+            event.stopPropagation();
+            closePopover(true);
+        }
+    };
+
+    const onControlsBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+        const next = event.relatedTarget as Node | null;
+        if (openRef.current && next && !controlsRef.current?.contains(next)) {
+            closePopover(false);
+        }
+    };
+
+    const onMenuKeyDown = (event: React.KeyboardEvent<HTMLUListElement>) => {
+        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+        const from = items.indexOf(event.target as HTMLElement);
+        let to = -1;
+        if (event.key === 'ArrowDown') {
+            to = (from + 1) % items.length;
+        } else if (event.key === 'ArrowUp') {
+            to = (from <= 0 ? items.length : from) - 1;
+        } else if (event.key === 'Home') {
+            to = 0;
+        } else if (event.key === 'End') {
+            to = items.length - 1;
+        }
+        if (items.length && to >= 0) {
+            event.preventDefault();
+            items[to].focus();
+        }
+    };
+
+    const onModesKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        const step = ({ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1} as Record<string, number>)[event.key];
+        const radios = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'));
+        const from = radios.indexOf(event.target as HTMLElement);
+        if (!step || from < 0) {
+            return;
+        }
+        event.preventDefault();
+        const to = (from + step + radios.length) % radios.length;
+        radios[to].focus();
+        select(MODES[to].value);
+    };
+
     if (phase.name === 'loading') {
         return <div className='phoenix-shell phoenix-shell--loading' role='status'>{'Đang tải…'}</div>;
     }
@@ -220,19 +395,36 @@ export default function PhoenixShell({children}: Props) {
                         <span className='phoenix-shell__app-name'>{'Chat'}</span>
                     </span>
                 </div>
-                <div className='phoenix-shell__controls'>
-                    <div className='phoenix-shell__launcher'>
+                {/* Delegated Escape/blur handling: the focusable controls inside own the interaction. */}
+                {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+                <div
+                    className='phoenix-shell__controls'
+                    ref={controlsRef}
+                    onKeyDown={onControlsKeyDown}
+                    onBlur={onControlsBlur}
+                >
+                    <div className='phoenix-shell__popover-root'>
                         <button
-                            className='phoenix-shell__launcher-button'
+                            className='phoenix-shell__icon-button'
+                            ref={(el) => {
+                                triggerRefs.current.apps = el;
+                            }}
                             type='button'
-                            aria-haspopup='true'
-                            aria-expanded={menuOpen}
-                            onClick={() => setMenuOpen((o) => !o)}
-                        >{'Ứng dụng'}</button>
-                        {menuOpen && (
+                            aria-label='Ứng dụng'
+                            aria-haspopup='menu'
+                            aria-expanded={openPopover === 'apps'}
+                            aria-controls={openPopover === 'apps' ? appsPanelId : undefined}
+                            onClick={() => togglePopover('apps')}
+                        ><LauncherIcon/></button>
+                        {openPopover === 'apps' && (
                             <ul
-                                className='phoenix-shell__menu'
+                                id={appsPanelId}
+                                className='phoenix-shell__popover phoenix-shell__menu'
                                 role='menu'
+                                aria-label='Ứng dụng'
+                                data-phoenix-popover='apps'
+                                tabIndex={-1}
+                                onKeyDown={onMenuKeyDown}
                             >
                                 {apps.map((a) => (
                                     <li
@@ -240,38 +432,111 @@ export default function PhoenixShell({children}: Props) {
                                         role='none'
                                     >
                                         <a
+                                            className='phoenix-shell__menu-item'
                                             role='menuitem'
+                                            tabIndex={-1}
                                             href={a.launchUrl}
                                             rel='noopener noreferrer'
                                         >{a.label}</a>
                                     </li>
                                 ))}
+                                {apps.length === 0 && (
+                                    <li
+                                        className='phoenix-shell__menu-empty'
+                                        role='none'
+                                    >{'Bạn chưa được cấp ứng dụng'}</li>
+                                )}
                             </ul>
                         )}
                     </div>
-                    <div
-                        className='phoenix-shell__modes'
-                        role='radiogroup'
-                        aria-label='Giao diện'
-                    >
-                        {MODES.map((m) => (
-                            <button
-                                key={m.value}
-                                type='button'
-                                role='radio'
-                                aria-checked={snapshot.preference.mode === m.value}
-                                onClick={() => choose(m.value)}
-                            >{m.label}</button>
-                        ))}
-                    </div>
-                    <span className='phoenix-shell__divider' aria-hidden='true'/>
-                    <div className='phoenix-shell__account'>
-                        {safeHttps(snapshot.account?.avatarUrl || undefined) ? <img className='phoenix-shell__avatar' src={snapshot.account!.avatarUrl!} alt={accountName}/> : <span className='phoenix-shell__account-monogram' aria-hidden='true'>{initials(accountName)}</span>}
-                        <span className='phoenix-shell__account-text'>
-                            <span className='phoenix-shell__account-name'>{accountName}</span>
-                            <span className='phoenix-shell__account-app'>{'Chat'}</span>
-                        </span>
-                        {safeHttps(logoutUrl || undefined) && <a className='phoenix-shell__logout' href={logoutUrl as string}>{'Đăng xuất'}</a>}
+                    <span
+                        className='phoenix-shell__divider'
+                        aria-hidden='true'
+                    />
+                    <div className='phoenix-shell__popover-root'>
+                        <button
+                            className='phoenix-shell__account-trigger'
+                            ref={(el) => {
+                                triggerRefs.current.account = el;
+                            }}
+                            type='button'
+                            title={`${accountName} — ${tenantName}`}
+                            aria-label='Tài khoản'
+                            aria-describedby={accountDescriptionId}
+                            aria-haspopup='dialog'
+                            aria-expanded={openPopover === 'account'}
+                            aria-controls={openPopover === 'account' ? accountPanelId : undefined}
+                            onClick={() => togglePopover('account')}
+                        >
+                            <Avatar
+                                url={snapshot.account?.avatarUrl}
+                                name={accountName}
+                            />
+                            <span
+                                id={accountDescriptionId}
+                                className='phoenix-shell__account-text'
+                            >
+                                <span className='phoenix-shell__account-name'>{accountName}</span>{' '}
+                                <span className='phoenix-shell__account-tenant'>{tenantName}</span>
+                            </span>
+                        </button>
+                        {openPopover === 'account' && (
+                            <div
+                                id={accountPanelId}
+                                className='phoenix-shell__popover phoenix-shell__account-panel'
+                                role='dialog'
+                                aria-label='Tài khoản'
+                                aria-modal='false'
+                                data-phoenix-popover='account'
+                                tabIndex={-1}
+                            >
+                                <div className='phoenix-shell__identity'>
+                                    <Avatar
+                                        url={snapshot.account?.avatarUrl}
+                                        name={accountName}
+                                    />
+                                    <span className='phoenix-shell__account-text'>
+                                        <span className='phoenix-shell__account-name'>{accountName}</span>
+                                        <span className='phoenix-shell__account-tenant'>{tenantName}</span>
+                                    </span>
+                                </div>
+                                <div className='phoenix-shell__section'>
+                                    <span
+                                        id={modesLabelId}
+                                        className='phoenix-shell__section-label'
+                                    >{'Giao diện'}</span>
+                                    {/* Arrow keys are delegated from the radios, which are the focusable elements. */}
+                                    {/* eslint-disable-next-line jsx-a11y/interactive-supports-focus */}
+                                    <div
+                                        className='phoenix-shell__modes'
+                                        role='radiogroup'
+                                        aria-labelledby={modesLabelId}
+                                        onKeyDown={onModesKeyDown}
+                                    >
+                                        {MODES.map((m) => {
+                                            const checked = snapshot.preference.mode === m.value;
+                                            return (
+                                                <button
+                                                    key={m.value}
+                                                    className='phoenix-shell__mode'
+                                                    type='button'
+                                                    role='radio'
+                                                    tabIndex={checked ? 0 : -1}
+                                                    aria-checked={checked}
+                                                    onClick={() => select(m.value)}
+                                                >{m.label}</button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                {safeHttps(logoutUrl || undefined) && (
+                                    <a
+                                        className='phoenix-shell__logout'
+                                        href={logoutUrl as string}
+                                    >{'Đăng xuất'}</a>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
             </header>
