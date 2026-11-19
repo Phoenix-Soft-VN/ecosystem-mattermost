@@ -381,7 +381,11 @@ func (p *PhoenixNative) RevokeSession(ctx context.Context, sessionID string) err
 	if err != nil {
 		return nil
 	}
-	return asErr(p.a.RevokeSession(rctx, s))
+	if rerr := p.a.RevokeSession(rctx, s); rerr != nil {
+		return asErr(rerr)
+	}
+	p.a.Srv().Platform().CloseWebConnsForSession(s.UserId, s.Id)
+	return nil
 }
 
 // SessionIDFromRequest resolves the caller's own session cookie; it never reads a client-chosen id.

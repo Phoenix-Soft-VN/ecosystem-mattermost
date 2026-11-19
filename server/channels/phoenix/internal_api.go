@@ -79,6 +79,8 @@ func WriteError(w http.ResponseWriter, err error, audit func(string, map[string]
 	}
 	if pe.Status == http.StatusTooManyRequests {
 		w.Header().Set("Retry-After", "1")
+	} else if pe.Status == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", "5")
 	}
 	writeJSON(w, pe.Status, map[string]string{"code": pe.Code, "message": pe.Message, "correlationId": cid})
 }

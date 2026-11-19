@@ -13,12 +13,24 @@ import (
 )
 
 const (
-	backchannelEvent  = "http://schemas.openid.net/event/backchannel-logout"
-	logoutMaxAge      = 600 * time.Second // the Gateway logout token has no exp; iat + max-age anchors freshness
-	logoutReplayGrace = 700 * time.Second
+	backchannelEvent     = "http://schemas.openid.net/event/backchannel-logout"
+	accessChangedEvent   = "https://phoenixsoft.vn/events/access-changed"
+	themeInvalidatedEvent = "https://phoenixsoft.vn/events/theme-invalidated"
+	logoutMaxAge         = 600 * time.Second
+	logoutReplayGrace    = 700 * time.Second
 )
 
-// LogoutService revokes native sessions on Gateway back-channel logout and browser cleanup.
+// PushEvent describes a verified Gateway push JWT (`backchannel-logout`, `access-changed`, or `theme-invalidated`).
+type PushEvent struct {
+	SID      string
+	Sub      string
+	TenantID string
+	JTI      string
+	ExpMS    int64
+	Events   map[string]bool
+}
+
+// LogoutService revokes native sessions on Gateway back-channel logout / push events and browser cleanup.
 type LogoutService struct {
 	Store     *Store
 	Settings  Settings
@@ -26,6 +38,7 @@ type LogoutService struct {
 	Sessions  SessionOps
 	Policy    *Policy
 	Authority *Authority
+	Shell     *ShellService
 	Limiter   *Limiter
 	Now       func() time.Time
 	Audit     func(event string, fields map[string]string)
@@ -50,6 +63,19 @@ func (l *LogoutService) RevokeSID(ctx context.Context, sid string) (int, error) 
 	if err != nil {
 		return 0, err
 	}
+	return l.revokeSessionIDs(ctx, ids)
+}
+
+// RevokeSub revokes all native sessions bound to (issuer, sub).
+func (l *LogoutService) RevokeSub(ctx context.Context, sub string) (int, error) {
+	ids, err := l.Store.SessionIDsBySub(ctx, l.Settings.OIDCIssuer, sub)
+	if err != nil {
+		return 0, err
+	}
+	return l.revokeSessionIDs(ctx, ids)
+}
+
+func (l *LogoutService) revokeSessionIDs(ctx context.Context, ids []string) (int, error) {
 	n := 0
 	for _, id := range ids {
 		if err := l.Sessions.RevokeSession(ctx, id); err != nil {
@@ -68,16 +94,30 @@ func (l *LogoutService) forget(sessionID string) {
 	if l.Authority != nil {
 		l.Authority.Invalidate(sessionID)
 	}
+	if l.Shell != nil {
+		l.Shell.InvalidateSession(sessionID)
+	}
 }
 
-// VerifyLogoutToken validates a Gateway logout token: RS256 from the fixed JWKS, exact issuer and
-// audience (the client id), the back-channel event, no nonce, a sid, iat within the max age and not
-// in the future. The token carries no exp by Gateway convention, so none is required.
+// VerifyLogoutToken validates a standard back-channel logout token requiring exp, iat, jti, no nonce, and sid/sub.
 func (l *LogoutService) VerifyLogoutToken(ctx context.Context, raw string) (sid, jti string, err error) {
+	pe, err := l.VerifyPushToken(ctx, raw)
+	if err != nil {
+		return "", "", err
+	}
+	if !pe.Events[backchannelEvent] || pe.SID == "" {
+		return "", "", errors.New("missing back-channel logout sid")
+	}
+	return pe.SID, pe.JTI, nil
+}
+
+// VerifyPushToken validates a signed Phoenix push JWT (`backchannel-logout`, `access-changed`, `theme-invalidated`),
+// requiring RS256 from JWKS, exact iss/aud, required exp & iat & jti, and no nonce.
+func (l *LogoutService) VerifyPushToken(ctx context.Context, raw string) (PushEvent, error) {
 	claims := jwt.MapClaims{}
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(l.Settings.OIDCIssuer), jwt.WithAudience(l.Settings.OIDCClientID),
-		jwt.WithTimeFunc(l.now), jwt.WithLeeway(5*time.Second),
+		jwt.WithExpirationRequired(), jwt.WithTimeFunc(l.now), jwt.WithLeeway(5*time.Second),
 	)
 	tok, perr := parser.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
@@ -87,28 +127,54 @@ func (l *LogoutService) VerifyLogoutToken(ctx context.Context, raw string) (sid,
 		return l.Keys.Key(ctx, kid)
 	})
 	if perr != nil || !tok.Valid {
-		return "", "", errors.New("logout token rejected")
+		return PushEvent{}, errors.New("push token rejected")
 	}
 	iat, e := claims.GetIssuedAt()
 	if e != nil || iat == nil || l.now().Sub(iat.Time) > logoutMaxAge || iat.Time.After(l.now().Add(5*time.Second)) {
-		return "", "", errors.New("iat outside the accepted window")
+		return PushEvent{}, errors.New("iat outside the accepted window")
 	}
-	events, _ := claims["events"].(map[string]any)
-	if _, ok := events[backchannelEvent]; !ok {
-		return "", "", errors.New("missing back-channel logout event")
+	exp, ee := claims.GetExpirationTime()
+	if ee != nil || exp == nil {
+		return PushEvent{}, errors.New("exp required")
+	}
+	rawEvents, _ := claims["events"].(map[string]any)
+	if len(rawEvents) == 0 {
+		return PushEvent{}, errors.New("events claim required")
+	}
+	parsedEvents := make(map[string]bool, 3)
+	for _, known := range []string{backchannelEvent, accessChangedEvent, themeInvalidatedEvent} {
+		if _, ok := rawEvents[known]; ok {
+			parsedEvents[known] = true
+		}
+	}
+	if len(parsedEvents) == 0 {
+		return PushEvent{}, errors.New("unsupported push event type")
 	}
 	if _, has := claims["nonce"]; has {
-		return "", "", errors.New("logout token must not carry a nonce")
+		return PushEvent{}, errors.New("push token must not carry a nonce")
 	}
-	sid, _ = claims["sid"].(string)
-	jti, _ = claims["jti"].(string)
-	if sid == "" || jti == "" || len(sid) > 255 || len(jti) > 255 {
-		return "", "", errors.New("sid and jti required")
+	sid, _ := claims["sid"].(string)
+	sub, _ := claims["sub"].(string)
+	tenantID, _ := claims["tenant_id"].(string)
+	jti, _ := claims["jti"].(string)
+	if jti == "" || len(sid) > 255 || len(sub) > 255 || len(jti) > 255 {
+		return PushEvent{}, errors.New("jti required")
 	}
-	return sid, jti, nil
+	if parsedEvents[backchannelEvent] && sid == "" && sub == "" {
+		return PushEvent{}, errors.New("sid or sub required for backchannel-logout")
+	}
+	if parsedEvents[accessChangedEvent] && !parsedEvents[backchannelEvent] && sub == "" {
+		return PushEvent{}, errors.New("sub required for access-changed")
+	}
+	expMS := exp.Time.Add(60 * time.Second).UnixMilli()
+	if expMS < l.now().Add(logoutReplayGrace).UnixMilli() {
+		expMS = l.now().Add(logoutReplayGrace).UnixMilli()
+	}
+	return PushEvent{SID: sid, Sub: sub, TenantID: tenantID, JTI: jti, ExpMS: expMS, Events: parsedEvents}, nil
 }
 
-// Backchannel handles POST /phoenix/auth/backchannel-logout (form: logout_token).
+// Backchannel handles POST /phoenix/auth/backchannel-logout and POST /phoenix/push (form: logout_token).
+// Executes revocation/invalidation BEFORE recording replay jti (MM-04) so failed attempts can retry.
 func (l *LogoutService) Backchannel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if l.Limiter != nil {
@@ -123,29 +189,67 @@ func (l *LogoutService) Backchannel(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, newErr(http.StatusBadRequest, CodeAuthInvalid, "invalid logout request"), l.Audit)
 		return
 	}
-	sid, jti, err := l.VerifyLogoutToken(r.Context(), r.PostForm.Get("logout_token"))
+	pe, err := l.VerifyPushToken(r.Context(), r.PostForm.Get("logout_token"))
 	if err != nil {
 		l.audit("phoenix.logout.reject", map[string]string{"reason": "token"})
 		WriteError(w, newErr(http.StatusBadRequest, CodeAuthInvalid, "invalid logout token"), l.Audit)
 		return
 	}
-	fresh, err := l.Store.ConsumeReplay(r.Context(), "logout", jti, l.now().Add(logoutReplayGrace).UnixMilli())
+	alreadyConsumed, err := l.Store.HasReplay(r.Context(), "logout", pe.JTI)
 	if err != nil {
 		WriteError(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "logout unavailable"), l.Audit)
 		return
 	}
-	if !fresh {
+	if alreadyConsumed {
 		// Replay: idempotent answer, no side effect.
 		writeJSON(w, http.StatusOK, map[string]any{"revoked": 0, "replay": true})
 		return
 	}
-	n, err := l.RevokeSID(r.Context(), sid)
-	if err != nil {
+
+	revoked := 0
+	if pe.Events[backchannelEvent] {
+		var rerr error
+		if pe.SID != "" {
+			revoked, rerr = l.RevokeSID(r.Context(), pe.SID)
+		} else {
+			revoked, rerr = l.RevokeSub(r.Context(), pe.Sub)
+		}
+		if rerr != nil {
+			WriteError(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "logout unavailable"), l.Audit)
+			return
+		}
+		if l.Shell != nil && pe.Sub != "" {
+			l.Shell.InvalidateSubject(pe.Sub)
+		}
+	}
+	if pe.Events[accessChangedEvent] && pe.Sub != "" {
+		affected, aerr := l.Store.ExpireAccessBySub(r.Context(), l.Settings.OIDCIssuer, pe.Sub)
+		if aerr != nil {
+			WriteError(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "access invalidation unavailable"), l.Audit)
+			return
+		}
+		for _, id := range affected {
+			l.forget(id)
+		}
+		if l.Shell != nil {
+			l.Shell.InvalidateSubject(pe.Sub)
+		}
+	}
+	if pe.Events[themeInvalidatedEvent] && l.Shell != nil {
+		if pe.TenantID != "" {
+			l.Shell.InvalidateTenant(pe.TenantID)
+		} else {
+			l.Shell.InvalidateAll()
+		}
+	}
+
+	// Only persist replay protection AFTER all side effects commit (MM-04).
+	if _, err := l.Store.ConsumeReplay(r.Context(), "logout", pe.JTI, pe.ExpMS); err != nil {
 		WriteError(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "logout unavailable"), l.Audit)
 		return
 	}
-	l.audit("phoenix.logout.revoked", map[string]string{"sessions": itoa(n)})
-	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
+	l.audit("phoenix.logout.revoked", map[string]string{"sessions": itoa(revoked)})
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": revoked})
 }
 
 var cleanupCookies = []string{"MMAUTHTOKEN", "MMUSERID", "MMCSRF", "MMCLOUDURL", authBindCookie}
@@ -171,8 +275,9 @@ func (l *LogoutService) Cleanup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Register mounts the logout routes.
+// Register mounts the logout and unified push routes.
 func (l *LogoutService) Register(handle func(path string, h http.Handler, methods ...string)) {
 	handle(authPath+"/backchannel-logout", http.HandlerFunc(l.Backchannel), http.MethodPost)
+	handle("/phoenix/push", http.HandlerFunc(l.Backchannel), http.MethodPost)
 	handle("/phoenix/logout/cleanup", http.HandlerFunc(l.Cleanup), http.MethodGet)
 }

@@ -48,6 +48,9 @@ function classify(status: number, code: string): ShellErrorKind {
     if (code === 'VERSION_CONFLICT') {
         return 'conflict';
     }
+    if (status === 401 && code === 'ASSERTION_INVALID') {
+        return 'unavailable';
+    }
     if (status === 401) {
         return 'invalid';
     }

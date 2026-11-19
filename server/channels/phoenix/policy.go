@@ -43,6 +43,7 @@ type ActorContext struct {
 }
 
 type actorKey struct{}
+type methodKey struct{}
 
 // WithActor stores the resolved actor in a context.
 func WithActor(ctx context.Context, a ActorContext) context.Context {
@@ -53,6 +54,17 @@ func WithActor(ctx context.Context, a ActorContext) context.Context {
 func ActorFrom(ctx context.Context) (ActorContext, bool) {
 	a, ok := ctx.Value(actorKey{}).(ActorContext)
 	return a, ok
+}
+
+// WithRequestMethod annotates ctx with the HTTP method for read-grace vs write fail-closed checks.
+func WithRequestMethod(ctx context.Context, method string) context.Context {
+	return context.WithValue(ctx, methodKey{}, method)
+}
+
+// RequestMethodFrom returns the HTTP method stored by WithRequestMethod, if any.
+func RequestMethodFrom(ctx context.Context) string {
+	m, _ := ctx.Value(methodKey{}).(string)
+	return m
 }
 
 // ErrNotFound is the single shape used for foreign and unknown (valid-format) resources.

@@ -52,20 +52,30 @@ func (s *Store) ConsumeAuthTxn(ctx context.Context, stateHash, browserHash strin
 
 // SessionBinding mirrors phoenix_session_bindings.
 type SessionBinding struct {
-	SessionID     string
-	Issuer        string
-	Sub           string
-	SID           string
-	TenantID      string
-	NativeUserID  string
-	AccessVersion int64
-	ExpiresAtMS   int64
+	SessionID           string
+	Issuer              string
+	Sub                 string
+	SID                 string
+	TenantID            string
+	NativeUserID        string
+	AccessVersion       int64
+	ExpiresAtMS         int64
+	AccessTokenEnc      string
+	RefreshTokenEnc     string
+	AccessExpiresAtMS   int64
+	IdleExpiresAtMS     int64
+	AbsoluteExpiresAtMS int64
+	OutageSinceMS       int64
 }
 
 // InsertSessionBinding attaches the immutable binding to a native session.
 func (s *Store) InsertSessionBinding(ctx context.Context, b SessionBinding) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO phoenix_session_bindings (session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, b.SessionID, b.Issuer, b.Sub, b.SID, b.TenantID, b.NativeUserID, b.AccessVersion, b.ExpiresAtMS)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO phoenix_session_bindings
+		(session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at,
+		 access_token_enc, refresh_token_enc, access_expires_at, idle_expires_at, absolute_expires_at, outage_since)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		b.SessionID, b.Issuer, b.Sub, b.SID, b.TenantID, b.NativeUserID, b.AccessVersion, b.ExpiresAtMS,
+		b.AccessTokenEnc, b.RefreshTokenEnc, b.AccessExpiresAtMS, b.IdleExpiresAtMS, b.AbsoluteExpiresAtMS, b.OutageSinceMS)
 	return err
 }
 
@@ -87,13 +97,103 @@ func (s *Store) SessionIDsBySID(ctx context.Context, sid string) ([]string, erro
 	return ids, rows.Err()
 }
 
+// SessionIDsBySub returns native sessions bound to (issuer, sub).
+func (s *Store) SessionIDsBySub(ctx context.Context, issuer, sub string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id FROM phoenix_session_bindings WHERE issuer=$1 AND sub=$2`, issuer, sub)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // SessionBindingByID loads one binding.
 func (s *Store) SessionBindingByID(ctx context.Context, sessionID string) (SessionBinding, error) {
 	var b SessionBinding
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at
+	err := s.db.QueryRowContext(ctx, `SELECT session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at,
+		COALESCE(access_token_enc, ''), COALESCE(refresh_token_enc, ''), COALESCE(access_expires_at, 0),
+		COALESCE(idle_expires_at, 0), COALESCE(absolute_expires_at, 0), COALESCE(outage_since, 0)
 		FROM phoenix_session_bindings WHERE session_id=$1`, sessionID).
-		Scan(&b.SessionID, &b.Issuer, &b.Sub, &b.SID, &b.TenantID, &b.NativeUserID, &b.AccessVersion, &b.ExpiresAtMS)
+		Scan(&b.SessionID, &b.Issuer, &b.Sub, &b.SID, &b.TenantID, &b.NativeUserID, &b.AccessVersion, &b.ExpiresAtMS,
+			&b.AccessTokenEnc, &b.RefreshTokenEnc, &b.AccessExpiresAtMS, &b.IdleExpiresAtMS, &b.AbsoluteExpiresAtMS, &b.OutageSinceMS)
 	return b, err
+}
+
+// UpdateSessionTokens persists rotated Gateway OIDC tokens and sliding idle expiry after refresh.
+func (s *Store) UpdateSessionTokens(ctx context.Context, sessionID, accessEnc, refreshEnc string, accessExpMS, idleExpMS, outageSinceMS int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phoenix_session_bindings
+		SET access_token_enc=$2, refresh_token_enc=CASE WHEN $3<>'' THEN $3 ELSE refresh_token_enc END,
+		    access_expires_at=$4, idle_expires_at=$5, outage_since=$6
+		WHERE session_id=$1`,
+		sessionID, accessEnc, refreshEnc, accessExpMS, idleExpMS, outageSinceMS)
+	return err
+}
+
+// MarkSessionOutage records when Gateway outage started (if not already set).
+func (s *Store) MarkSessionOutage(ctx context.Context, sessionID string, sinceMS int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phoenix_session_bindings
+		SET outage_since=CASE WHEN outage_since=0 THEN $2 ELSE outage_since END
+		WHERE session_id=$1`, sessionID, sinceMS)
+	return err
+}
+
+// ExpireAccessBySub zeroes access_expires_at for all sessions of a subject so their next request refreshes via Gateway.
+func (s *Store) ExpireAccessBySub(ctx context.Context, issuer, sub string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `UPDATE phoenix_session_bindings SET access_expires_at=0 WHERE issuer=$1 AND sub=$2 RETURNING session_id`, issuer, sub)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// WithLockedSessionBinding runs fn inside a DB transaction holding FOR UPDATE on the session binding row.
+func (s *Store) WithLockedSessionBinding(ctx context.Context, sessionID string, fn func(SessionBinding) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var b SessionBinding
+	err = tx.QueryRowContext(ctx, `SELECT session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at,
+		COALESCE(access_token_enc, ''), COALESCE(refresh_token_enc, ''), COALESCE(access_expires_at, 0),
+		COALESCE(idle_expires_at, 0), COALESCE(absolute_expires_at, 0), COALESCE(outage_since, 0)
+		FROM phoenix_session_bindings WHERE session_id=$1 FOR UPDATE`, sessionID).
+		Scan(&b.SessionID, &b.Issuer, &b.Sub, &b.SID, &b.TenantID, &b.NativeUserID, &b.AccessVersion, &b.ExpiresAtMS,
+			&b.AccessTokenEnc, &b.RefreshTokenEnc, &b.AccessExpiresAtMS, &b.IdleExpiresAtMS, &b.AbsoluteExpiresAtMS, &b.OutageSinceMS)
+	if err != nil {
+		return err
+	}
+	if err := fn(b); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// HasReplay reports whether a replay key has already been consumed without consuming it.
+func (s *Store) HasReplay(ctx context.Context, kind, key string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM phoenix_replay_keys WHERE kind=$1 AND replay_key=$2 AND expires_at >= $3`, kind, key, s.nowMS()).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // TenantTeamName returns the Team name of a tenant for the post-login redirect.

@@ -522,15 +522,6 @@ func (wc *WebConn) writePump() {
 	ticker := time.NewTicker(pingInterval)
 	authTicker := time.NewTicker(authCheckInterval)
 
-	// Phoenix background deadline: an idle connection must notice a revoked session, a revoked
-	// CHAT entitlement or an unreachable authority without any frame or invalidation message.
-	var phoenixTick <-chan time.Time
-	if phoenix.Default() != nil {
-		pt := time.NewTicker(phoenixLivenessInterval)
-		defer pt.Stop()
-		phoenixTick = pt.C
-	}
-
 	defer func() {
 		ticker.Stop()
 		authTicker.Stop()
@@ -661,12 +652,6 @@ func (wc *WebConn) writePump() {
 
 		case <-wc.endWritePump:
 			return
-
-		case <-phoenixTick:
-			if !wc.phoenixStillAuthorized() {
-				wc.Platform.logger.Info("websocket.phoenix: closing connection, access ended", mlog.String("user_id", wc.UserId))
-				return
-			}
 
 		case <-authTicker.C:
 			if wc.GetSessionToken() == "" {

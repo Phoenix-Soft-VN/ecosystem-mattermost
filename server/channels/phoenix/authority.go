@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,10 @@ const (
 	ScopeChatAccessContext = "chat:access-context"
 	BridgeAppCode          = "chat"
 	assertionTTL           = 45 * time.Second
+
+	oidcRefreshSkewMS     = 30 * 1000
+	oidcIdleTTLMS         = 7 * 24 * 3600 * 1000
+	oidcOutageReadGraceMS = 300 * 1000
 )
 
 // BridgeSigner mints the HMAC-SHA256 assertions of the Gateway UI bridge. They are keyed by the
@@ -104,22 +109,18 @@ type AuthorityDecision struct {
 	ExpiresAt       time.Time `json:"expiresAt"`
 }
 
-// AuthorityClient calls the Gateway POST /internal/chat/access-context.
+// AuthorityClient calls the Gateway POST /internal/chat/access-context (used at initial login).
 type AuthorityClient struct {
 	URL    string
 	Signer *BridgeSigner
-	Issuer string // principal issuer reported in the request body (the Gateway OIDC issuer)
+	Issuer string
 	HTTP   *http.Client
 }
 
-// ErrAuthorityUnavailable is returned when the Gateway cannot answer; it closes access.
+// ErrAuthorityUnavailable is returned when the Gateway cannot answer; it closes access (503).
 var ErrAuthorityUnavailable = newErr(http.StatusServiceUnavailable, CodeAuthorityDown, "authority unavailable")
 
-// AccessContext asks the Gateway; transport errors, non-200 answers and malformed bodies all
-// mean "cannot tell", which callers must treat as no access (fail closed).
 func (c *AuthorityClient) AccessContext(ctx context.Context, sub, sid, tenantID string) (AuthorityDecision, error) {
-	// Leave room for the positive cache and idle WS tick inside the 30s
-	// revocation bound, even when the shared Gateway stops answering.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	assertion := c.Signer.Sign(AudienceChatAccess, ScopeChatAccessContext, sub, tenantID, sid)
@@ -145,29 +146,31 @@ func (c *AuthorityClient) AccessContext(ctx context.Context, sub, sid, tenantID 
 	return d, nil
 }
 
-// AuthorityMaxAge bounds a positive decision (contracts C2: at most 30 s). The bound is
-// 18s + 5s background tick + 5s refresh deadline stays within 30s even
-// without a frame or invalidation, including a concurrent HTTP/WS refresh.
+// AuthorityMaxAge bounds a cached access decision when legacy AccessContext polling is active.
 const AuthorityMaxAge = 18 * time.Second
 
 type authorityEntry struct {
 	tenantID string
 	version  int64
 	decision AuthorityDecision
-	fetched  time.Time // carries a monotonic reading; ages are measured with time.Since
+	fetched  time.Time
 	err      *Error
 }
 
-// Authority is the live access cache. Entries are per native session and tenant; one session
-// never reads another's entry. Age uses the monotonic clock, so wall-clock jumps cannot extend a grant.
+// Authority validates sessions via lazy OAuth refresh + DB lock (push invalidates immediately) and
+// falls back to AccessContext at initial login or when OIDC refresh credentials are absent.
 type Authority struct {
-	Client *AuthorityClient
-	// Audit receives bounded, aggregate numeric telemetry only. No actor identity
-	// or assertion is retained in these process-wide operational measurements.
-	Audit func(event string, fields map[string]string)
-	// OnInactive is called when the Gateway says the Gateway session is gone (revoked logout).
-	OnInactive func(ctx context.Context, sessionID string)
-	MaxAge     time.Duration
+	Client       *AuthorityClient
+	Store        *Store
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	SealFn       func(string) (string, error)
+	OpenFn       func(string) (string, error)
+	Now          func() time.Time
+	Audit        func(event string, fields map[string]string)
+	OnInactive   func(ctx context.Context, sessionID string)
+	MaxAge       time.Duration
 
 	mu        sync.Mutex
 	entries   map[string]authorityEntry
@@ -182,11 +185,18 @@ type authorityMetrics struct {
 	durationMicros, maxDurationMicros, maxCacheAgeMillis int64
 }
 
+func (a *Authority) nowTime() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
+}
+
 func (a *Authority) observe(start time.Time, cached bool, age time.Duration, result error) {
 	if a.Audit == nil {
 		return
 	}
-	now := time.Now()
+	now := a.nowTime()
 	a.metricsMu.Lock()
 	m := &a.metrics
 	m.checks++
@@ -256,20 +266,38 @@ func (a *Authority) ValidFor(sessionID string) time.Duration {
 	return 0
 }
 
-// Invalidate drops the entries of one session (push invalidation; never the only mechanism).
+// Invalidate drops cached state for one session.
 func (a *Authority) Invalidate(sessionID string) {
 	a.mu.Lock()
 	delete(a.entries, sessionID)
 	a.mu.Unlock()
 }
 
-// Check validates a bound session against the Gateway, using the cache while it is fresh.
+func isSafeHTTPMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "", http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+// Check validates a bound session via lazy Gateway refresh when OIDC tokens are persisted,
+// falling back to AccessContext at initial login or when running legacy/test fixtures.
 func (a *Authority) Check(ctx context.Context, actor ActorContext) (result error) {
-	started := time.Now()
+	started := a.nowTime()
 	cached, age := false, time.Duration(0)
 	defer func() { a.observe(started, cached, age, result) }()
 	unlock := a.locks.Lock(actor.SessionID)
 	defer unlock()
+
+	if a.Store != nil && a.TokenURL != "" && !strings.HasPrefix(actor.SessionID, "login:") {
+		if b, berr := a.Store.SessionBindingByID(ctx, actor.SessionID); berr == nil && b.RefreshTokenEnc != "" {
+			err, didRefresh := a.checkOIDCLazyRefresh(ctx, actor, b)
+			cached = !didRefresh
+			return err
+		}
+	}
 
 	a.mu.Lock()
 	e, ok := a.entries[actor.SessionID]
@@ -286,8 +314,6 @@ func (a *Authority) Check(ctx context.Context, actor ActorContext) (result error
 		if !errors.As(err, &pe) {
 			pe = ErrAuthorityUnavailable
 		}
-		// A short unavailable result is fail-closed, never a positive grant. It
-		// prevents queued HTTP/WS callers from each waiting another timeout.
 		entry.err = pe
 		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second)
 		a.mu.Lock()
@@ -301,7 +327,7 @@ func (a *Authority) Check(ctx context.Context, actor ActorContext) (result error
 	switch {
 	case !d.Active:
 		entry.err = newErr(http.StatusUnauthorized, CodeAuthInvalid, "gateway session is not active")
-		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second) // short negative cache only
+		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second)
 	case !d.ChatEntitled || d.MembershipState != "ACTIVE" || d.TenantState != "ACTIVE":
 		entry.err = ErrAccessDenied
 		entry.decision.ExpiresAt = time.Now().Add(2 * time.Second)
@@ -313,6 +339,149 @@ func (a *Authority) Check(ctx context.Context, actor ActorContext) (result error
 		a.OnInactive(ctx, actor.SessionID)
 	}
 	return decisionError(entry)
+}
+
+func (a *Authority) checkOIDCLazyRefresh(ctx context.Context, actor ActorContext, initial SessionBinding) (error, bool) {
+	nowMS := a.nowTime().UnixMilli()
+	if (initial.AbsoluteExpiresAtMS > 0 && nowMS >= initial.AbsoluteExpiresAtMS) ||
+		(initial.IdleExpiresAtMS > 0 && nowMS >= initial.IdleExpiresAtMS) {
+		if a.OnInactive != nil {
+			a.OnInactive(ctx, actor.SessionID)
+		}
+		return newErr(http.StatusUnauthorized, CodeAuthInvalid, "session expired"), false
+	}
+	if initial.AccessExpiresAtMS > nowMS+oidcRefreshSkewMS {
+		return nil, false
+	}
+
+	var refreshedErr error
+	var refreshed bool
+	lockErr := a.Store.WithLockedSessionBinding(ctx, actor.SessionID, func(b SessionBinding) error {
+		nowLocked := a.nowTime().UnixMilli()
+		if (b.AbsoluteExpiresAtMS > 0 && nowLocked >= b.AbsoluteExpiresAtMS) ||
+			(b.IdleExpiresAtMS > 0 && nowLocked >= b.IdleExpiresAtMS) {
+			if a.OnInactive != nil {
+				a.OnInactive(ctx, actor.SessionID)
+			}
+			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "session expired")
+			return nil
+		}
+		if b.AccessExpiresAtMS > nowLocked+oidcRefreshSkewMS {
+			return nil
+		}
+		refreshed = true
+		rt, derr := a.openToken(b.RefreshTokenEnc)
+		if derr != nil || rt == "" {
+			if a.OnInactive != nil {
+				a.OnInactive(ctx, actor.SessionID)
+			}
+			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "invalid session token")
+			return nil
+		}
+		newAccess, newRefresh, expSec, status, callErr := a.postRefresh(ctx, rt)
+		if callErr != nil {
+			refreshedErr = a.outageResult(ctx, b, nowLocked)
+			return nil
+		}
+		switch {
+		case status == http.StatusOK && newAccess != "":
+			if expSec <= 0 {
+				expSec = 300
+			}
+			aEnc, serr := a.sealToken(newAccess)
+			if serr != nil {
+				refreshedErr = ErrAuthorityUnavailable
+				return nil
+			}
+			rEnc := ""
+			if newRefresh != "" {
+				rEnc, serr = a.sealToken(newRefresh)
+				if serr != nil {
+					refreshedErr = ErrAuthorityUnavailable
+					return nil
+				}
+			}
+			nextIdle := nowLocked + oidcIdleTTLMS
+			if b.AbsoluteExpiresAtMS > 0 && nextIdle > b.AbsoluteExpiresAtMS {
+				nextIdle = b.AbsoluteExpiresAtMS
+			}
+			_ = a.Store.UpdateSessionTokens(ctx, b.SessionID, aEnc, rEnc, nowLocked+expSec*1000, nextIdle, 0)
+			return nil
+		case status == http.StatusBadRequest || status == http.StatusUnauthorized:
+			if a.OnInactive != nil {
+				a.OnInactive(ctx, actor.SessionID)
+			}
+			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "gateway session ended")
+			return nil
+		case status == http.StatusForbidden:
+			// Preserve session on 403 APP_NOT_ALLOWED / membership denial.
+			refreshedErr = ErrAccessDenied
+			return nil
+		default:
+			refreshedErr = a.outageResult(ctx, b, nowLocked)
+			return nil
+		}
+	})
+	if lockErr != nil {
+		return ErrAuthorityUnavailable, refreshed
+	}
+	return refreshedErr, refreshed
+}
+
+func (a *Authority) outageResult(ctx context.Context, b SessionBinding, nowMS int64) error {
+	since := b.OutageSinceMS
+	if since == 0 {
+		since = nowMS
+		_ = a.Store.MarkSessionOutage(ctx, b.SessionID, since)
+	}
+	if isSafeHTTPMethod(RequestMethodFrom(ctx)) && nowMS-since <= oidcOutageReadGraceMS {
+		return nil
+	}
+	return ErrAuthorityUnavailable
+}
+
+func (a *Authority) sealToken(plain string) (string, error) {
+	if a.SealFn != nil {
+		return a.SealFn(plain)
+	}
+	return plain, nil
+}
+
+func (a *Authority) openToken(sealed string) (string, error) {
+	if a.OpenFn != nil {
+		return a.OpenFn(sealed)
+	}
+	return sealed, nil
+}
+
+func (a *Authority) postRefresh(ctx context.Context, refreshToken string) (accessToken, rotatedRefresh string, expiresIn int64, status int, err error) {
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost, a.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", 0, 0, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(url.QueryEscape(a.ClientID), url.QueryEscape(a.ClientSecret))
+	resp, err := a.Client.HTTP.Do(req)
+	if err != nil {
+		return "", "", 0, 0, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", "", 0, resp.StatusCode, nil
+	}
+	var payload struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", "", 0, http.StatusBadGateway, nil
+	}
+	return payload.AccessToken, payload.RefreshToken, payload.ExpiresIn, resp.StatusCode, nil
 }
 
 func decisionError(e authorityEntry) error {

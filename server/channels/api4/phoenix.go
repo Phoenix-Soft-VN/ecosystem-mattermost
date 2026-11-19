@@ -89,10 +89,16 @@ func (api *API) InitPhoenix() {
 			authLimiter := phoenix.NewLimiter(phoenix.AuthRatePerMin, time.Minute, nil)
 			authSvc = &phoenix.AuthService{Store: store, Settings: settings, Keys: oidcKeys, Secret: strings.TrimSpace(string(secretRaw)), TxnKey: txnKey,
 				HTTP: httpc, Sessions: native, Authority: authority, Policy: policy, Limiter: authLimiter, Audit: audit}
+			authority.Store = store
+			authority.TokenURL = settings.OIDCTokenURL
+			authority.ClientID = settings.OIDCClientID
+			authority.ClientSecret = authSvc.Secret
+			authority.SealFn = authSvc.SealToken
+			authority.OpenFn = authSvc.OpenToken
 			shellSvc = &phoenix.ShellService{Policy: policy, Sessions: native, Signer: signer, GatewayURL: settings.GatewayURL,
 				SiteOrigin: settings.SiteOrigin, LogoutURL: strings.TrimRight(settings.OIDCIssuer, "/") + "/oauth2/logout", HTTP: httpc, Audit: audit}
 			logoutSvc = &phoenix.LogoutService{Store: store, Settings: settings, Keys: oidcKeys, Sessions: native, Policy: policy, Authority: authority,
-				Limiter: phoenix.NewLimiter(phoenix.AuthRatePerMin*4, time.Minute, nil), Audit: audit}
+				Shell: shellSvc, Limiter: phoenix.NewLimiter(phoenix.AuthRatePerMin*4, time.Minute, nil), Audit: audit}
 			if taskFile := os.Getenv("PHOENIX_TASK_SECRET_FILE"); taskFile != "" {
 				raw, terr := os.ReadFile(taskFile)
 				if terr != nil {

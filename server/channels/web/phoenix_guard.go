@@ -113,7 +113,7 @@ func (h Handler) phoenixGuard(c *Context, r *http.Request) {
 		}
 		return
 	}
-	actor, err := pol.ResolveActor(r.Context(), session.Id, session.UserId)
+	actor, err := pol.ResolveActor(phoenix.WithRequestMethod(r.Context(), r.Method), session.Id, session.UserId)
 	if err != nil {
 		c.Err = phoenixError(err)
 		return

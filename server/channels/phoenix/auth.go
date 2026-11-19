@@ -84,6 +84,16 @@ func randomToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// SealToken encrypts a Gateway OAuth token using the configured AES-256-GCM key.
+func (s *AuthService) SealToken(plain string) (string, error) {
+	return s.seal(plain)
+}
+
+// OpenToken decrypts a sealed Gateway OAuth token.
+func (s *AuthService) OpenToken(sealed string) (string, error) {
+	return s.open(sealed)
+}
+
 func (s *AuthService) seal(plain string) (string, error) {
 	block, err := aes.NewCipher(s.TxnKey)
 	if err != nil {
@@ -229,7 +239,7 @@ func (s *AuthService) Login(w http.ResponseWriter, r *http.Request) {
 	challenge := sha256.Sum256([]byte(verifier))
 	q := url.Values{
 		"response_type": {"code"}, "client_id": {s.Settings.OIDCClientID},
-		"redirect_uri": {s.Settings.SiteOrigin + authPath + "/callback"}, "scope": {"openid"},
+		"redirect_uri": {s.Settings.SiteOrigin + authPath + "/callback"}, "scope": {"openid profile email"},
 		"state": {state}, "nonce": {nonce},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"},
 	}
@@ -284,7 +294,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, invalid)
 		return
 	}
-	idToken, err := s.exchange(r.Context(), code, verifier)
+	ex, err := s.exchange(r.Context(), code, verifier)
 	if err != nil {
 		s.audit("phoenix.auth.reject", map[string]string{"reason": "code-exchange"})
 		var pe *Error
@@ -295,7 +305,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, invalid)
 		return
 	}
-	claims, err := s.VerifyIDToken(r.Context(), idToken, txn.NonceHash)
+	claims, err := s.VerifyIDToken(r.Context(), ex.IDToken, txn.NonceHash)
 	if err != nil {
 		s.audit("phoenix.auth.reject", map[string]string{"reason": "id-token"})
 		s.fail(w, invalid)
@@ -346,10 +356,31 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, newErr(http.StatusServiceUnavailable, CodeNotReady, "authentication unavailable"))
 		return
 	}
+	nowMS := s.now().UnixMilli()
+	expSec := ex.ExpiresIn
+	if expSec <= 0 {
+		expSec = 300
+	}
+	accessEnc := ""
+	if ex.AccessToken != "" {
+		if enc, serr := s.seal(ex.AccessToken); serr == nil {
+			accessEnc = enc
+		}
+	}
+	refreshEnc := ""
+	if ex.RefreshToken != "" {
+		if enc, serr := s.seal(ex.RefreshToken); serr == nil {
+			refreshEnc = enc
+		}
+	}
 	bindFn := func(sessionID string, expiresAtMS int64) error {
 		return s.Store.InsertSessionBinding(r.Context(), SessionBinding{
 			SessionID: sessionID, Issuer: ub.Issuer, Sub: ub.Sub, SID: claims.SID, TenantID: ub.TenantID,
 			NativeUserID: ub.NativeUserID, AccessVersion: ub.AccessVersion, ExpiresAtMS: expiresAtMS,
+			AccessTokenEnc: accessEnc, RefreshTokenEnc: refreshEnc,
+			AccessExpiresAtMS: nowMS + expSec*1000,
+			IdleExpiresAtMS:   nowMS + 7*24*3600*1000,
+			AbsoluteExpiresAtMS: nowMS + 90*24*3600*1000,
 		})
 	}
 	sessionID, err := s.Sessions.NewSession(r.Context(), w, r, ub.NativeUserID, bindFn)
@@ -368,32 +399,37 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, dest, http.StatusFound)
 }
 
+type TokenExchangeResult struct {
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
 // exchange trades the authorization code for tokens at the fixed Gateway token endpoint.
-func (s *AuthService) exchange(ctx context.Context, code, verifier string) (string, error) {
+func (s *AuthService) exchange(ctx context.Context, code, verifier string) (TokenExchangeResult, error) {
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code},
 		"redirect_uri": {s.Settings.SiteOrigin + authPath + "/callback"}, "code_verifier": {verifier}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.Settings.OIDCTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return TokenExchangeResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(url.QueryEscape(s.Settings.OIDCClientID), url.QueryEscape(s.Secret))
 	resp, err := s.HTTP.Do(req)
 	if err != nil {
-		return "", wrapErr(http.StatusServiceUnavailable, CodeAuthorityDown, "token endpoint unreachable", err)
+		return TokenExchangeResult{}, wrapErr(http.StatusServiceUnavailable, CodeAuthorityDown, "token endpoint unreachable", err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", newErr(http.StatusUnauthorized, CodeAuthInvalid, "code exchange rejected")
+		return TokenExchangeResult{}, newErr(http.StatusUnauthorized, CodeAuthInvalid, "code exchange rejected")
 	}
-	var tok struct {
-		IDToken string `json:"id_token"`
-	}
+	var tok TokenExchangeResult
 	if err := json.Unmarshal(data, &tok); err != nil || tok.IDToken == "" {
-		return "", newErr(http.StatusUnauthorized, CodeAuthInvalid, "no id_token in response")
+		return TokenExchangeResult{}, newErr(http.StatusUnauthorized, CodeAuthInvalid, "no id_token in response")
 	}
-	return tok.IDToken, nil
+	return tok, nil
 }
 
 // VerifyIDToken applies the design §6.3 checks: RS256 only (key from the fixed JWKS, never from the

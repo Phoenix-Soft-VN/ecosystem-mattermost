@@ -24,7 +24,9 @@ type Phase =
 
 type PopoverId = 'apps' | 'theme' | 'utilities';
 
-const REVALIDATE_MS = 5000;
+const LOGOUT_GUARD_MS = 30_000;
+let lastTerminalLogoutAt = 0;
+
 const COMPACT_UTILITIES_WIDTH = 1020;
 const MODES: Array<{value: ColorMode; label: string}> = [
     {value: 'light', label: 'Sáng'},
@@ -273,11 +275,28 @@ export default function PhoenixShell({children}: Props) {
             setPhase((p) => ({name: 'ready', snapshot, nav: nav ?? (p.name === 'ready' ? p.nav : null), logoutUrl: ctx.logoutUrl ?? (p.name === 'ready' ? p.logoutUrl : null)}));
         } catch (e) {
             const error = e instanceof ShellError ? e : new ShellError(503, 'PHOENIX_AUTHORITY_UNAVAILABLE');
-            authorityFailed.current = true;
-            clearTheme(document.documentElement);
-            setPhase({name: 'error', error});
-            InitialLoadingScreen.stop('phoenix-authority');
-            await clearSensitiveBrowserState();
+            const isTerminal401 = error.status === 401 && error.code !== 'ASSERTION_INVALID';
+            if (isTerminal401) {
+                authorityFailed.current = true;
+                clearTheme(document.documentElement);
+                setPhase({name: 'error', error});
+                InitialLoadingScreen.stop('phoenix-authority');
+                const now = Date.now();
+                if (lastTerminalLogoutAt === 0 || now < lastTerminalLogoutAt || now - lastTerminalLogoutAt >= LOGOUT_GUARD_MS) {
+                    lastTerminalLogoutAt = now;
+                    await clearSensitiveBrowserState();
+                }
+            } else if (error.status === 403) {
+                // Keep native/SSO session intact on 403 APP_NOT_ALLOWED / CHAT_ACCESS_DENIED.
+                authorityFailed.current = true;
+                clearTheme(document.documentElement);
+                setPhase({name: 'error', error});
+                InitialLoadingScreen.stop('phoenix-authority');
+            } else {
+                // 401 ASSERTION_INVALID / 502 / 503 / 504: preserve existing LKG shell if available, never log out.
+                setPhase((prev) => (prev.name === 'ready' ? prev : {name: 'error', error}));
+                InitialLoadingScreen.stop('phoenix-authority');
+            }
         } finally {
             requestActive.current = false;
         }
@@ -287,10 +306,13 @@ export default function PhoenixShell({children}: Props) {
         const release = registerPhoenixSessionLifecycle();
         const cleared = () => {void load();};
         window.addEventListener(NATIVE_SESSION_CLEARED, cleared);
+        const logoutChannel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('phoenix:logout');
+        const onLogoutBroadcast = () => {void load();};
+        logoutChannel?.addEventListener('message', onLogoutBroadcast);
         load();
-        const t = window.setInterval(load, REVALIDATE_MS);
         return () => {
-            window.clearInterval(t);
+            logoutChannel?.removeEventListener('message', onLogoutBroadcast);
+            logoutChannel?.close();
             window.removeEventListener(NATIVE_SESSION_CLEARED, cleared);
             release();
         };

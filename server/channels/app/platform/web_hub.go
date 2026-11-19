@@ -75,6 +75,11 @@ var hubSemaphoreCount = runtime.NumCPU() * 4
 // Hub is the central place to manage all websocket connections in the server.
 // It handles different websocket events and sending messages to individual
 // user connections.
+type webConnCloseSessionMessage struct {
+	userID    string
+	sessionID string
+}
+
 type Hub struct {
 	// connectionCount should be kept first.
 	// See https://github.com/mattermost/mattermost-server/pull/7281
@@ -87,6 +92,7 @@ type Hub struct {
 	stop               chan struct{}
 	didStop            chan struct{}
 	invalidateUser     chan string
+	closeSession       chan webConnCloseSessionMessage
 	invalidateAll      chan struct{}
 	invalidateAllCache chan struct{}
 	activity           chan *webConnActivityMessage
@@ -111,6 +117,7 @@ func newWebHub(ps *PlatformService) *Hub {
 		stop:               make(chan struct{}),
 		didStop:            make(chan struct{}),
 		invalidateUser:     make(chan string),
+		closeSession:       make(chan webConnCloseSessionMessage),
 		invalidateAll:      make(chan struct{}),
 		invalidateAllCache: make(chan struct{}),
 		activity:           make(chan *webConnActivityMessage),
@@ -468,6 +475,21 @@ func (h *Hub) InvalidateUser(userID string) {
 	}
 }
 
+// CloseSession immediately closes WebSocket connections belonging to the revoked session.
+func (h *Hub) CloseSession(userID, sessionID string) {
+	select {
+	case h.closeSession <- webConnCloseSessionMessage{userID: userID, sessionID: sessionID}:
+	case <-h.stop:
+	}
+}
+
+// CloseWebConnsForSession closes active WebSocket connections bound to the user/session on this node.
+func (ps *PlatformService) CloseWebConnsForSession(userID, sessionID string) {
+	if hub := ps.GetHubForUserId(userID); hub != nil {
+		hub.CloseSession(userID, sessionID)
+	}
+}
+
 // InvalidateAll invalidates the cached session state of every WebConn
 // registered with this hub. Global counterpart of InvalidateUser.
 func (h *Hub) InvalidateAll() {
@@ -718,6 +740,8 @@ func (h *Hub) Start() {
 						closeAndRemoveConn(connIndex, webConn)
 					}
 				}
+			case req := <-h.closeSession:
+				closeSessionConns(connIndex, req)
 			case <-h.invalidateAll:
 				// Mirrors the invalidateUser arm across every conn,
 				// also clearing the session token so the next
@@ -854,6 +878,17 @@ func areAllInactive(conns iter.Seq[*WebConn]) bool {
 
 // closeAndRemoveConn closes the send channel which will close the
 // websocket connection, and then it removes the webConn from the conn index.
+func closeSessionConns(connIndex *hubConnectionIndex, req webConnCloseSessionMessage) {
+	for webConn := range connIndex.ForUser(req.userID) {
+		sess := webConn.GetSession()
+		if sess == nil || req.sessionID == "" || sess.Id == req.sessionID {
+			webConn.InvalidateCache()
+			webConn.SetSessionToken("")
+			closeAndRemoveConn(connIndex, webConn)
+		}
+	}
+}
+
 func closeAndRemoveConn(connIndex *hubConnectionIndex, conn *WebConn) {
 	close(conn.send)
 	connIndex.Remove(conn)

@@ -38,7 +38,7 @@ func TestLogoutReplay(t *testing.T) {
 	now := time.Now()
 	service := &LogoutService{Store: NewStore(f.db, nil), Settings: Settings{OIDCIssuer: testIssuer, OIDCClientID: "mattermost"}, Keys: staticKeys{"gateway-key": &key.key.PublicKey}, Sessions: logoutSessions{db: f.db, own: w.SessA1}, Now: func() time.Time { return now }, Policy: w.policy()}
 	sign := func(change func(jwt.MapClaims)) string {
-		c := jwt.MapClaims{"iss": testIssuer, "aud": "mattermost", "iat": now.Unix(), "sid": "sid-a1", "jti": "logout-1", "events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}}
+		c := jwt.MapClaims{"iss": testIssuer, "aud": "mattermost", "iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "sid": "sid-a1", "jti": "logout-1", "events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}}
 		if change != nil {
 			change(c)
 		}
@@ -50,7 +50,7 @@ func TestLogoutReplay(t *testing.T) {
 		}
 		return raw
 	}
-	for _, change := range []func(jwt.MapClaims){func(c jwt.MapClaims) { c["iss"] = "https://foreign.invalid" }, func(c jwt.MapClaims) { c["aud"] = "foreign" }, func(c jwt.MapClaims) { delete(c, "events") }, func(c jwt.MapClaims) { c["nonce"] = "unexpected" }, func(c jwt.MapClaims) { c["iat"] = now.Add(-time.Hour).Unix() }} {
+	for _, change := range []func(jwt.MapClaims){func(c jwt.MapClaims) { c["iss"] = "https://foreign.invalid" }, func(c jwt.MapClaims) { c["aud"] = "foreign" }, func(c jwt.MapClaims) { delete(c, "events") }, func(c jwt.MapClaims) { delete(c, "exp") }, func(c jwt.MapClaims) { c["nonce"] = "unexpected" }, func(c jwt.MapClaims) { c["iat"] = now.Add(-time.Hour).Unix() }} {
 		if _, _, err := service.VerifyLogoutToken(context.Background(), sign(change)); err == nil {
 			t.Fatal("invalid logout accepted")
 		}

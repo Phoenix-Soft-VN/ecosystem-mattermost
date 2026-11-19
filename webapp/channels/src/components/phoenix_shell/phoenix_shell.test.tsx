@@ -315,22 +315,62 @@ test('C04 only granted, safe navigation and footer URLs are linked', async () =>
     view.unmount();
 });
 
-// Break: leaving an open theme menu, chat content, or applied theme variables after authority failure.
-test('C04 an authority failure while a panel is open removes the content, the panel and the theme', async () => {
+// Break: leaving an open theme menu, chat content, or applied theme variables after terminal 401 revocation.
+test('C04 terminal 401 revocation while a panel is open removes content, panel and theme once', async () => {
     const user = userEvent.setup();
+    const store = require('stores/redux_store').default;
     renderShell();
     await ready();
     await user.click(themeTrigger());
     expect(screen.getByRole('menu', {name: 'Giao diện'})).toBeVisible();
-    shell.mockRejectedValue(new client.ShellError(503, 'PHOENIX_AUTHORITY_UNAVAILABLE'));
+    shell.mockRejectedValue(new client.ShellError(401, 'SESSION_ENDED'));
     act(() => {
         window.dispatchEvent(new Event(NATIVE_SESSION_CLEARED));
     });
-    expect(await screen.findByRole('alert')).toHaveTextContent('Chưa thể xác minh quyền truy cập. Vui lòng thử lại sau.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.');
     expect(screen.queryByRole('menu')).toBeNull();
     expect(screen.queryByText('Chat content')).toBeNull();
     expect(screen.queryByRole('menuitemradio')).toBeNull();
     expect(document.documentElement.hasAttribute('data-phoenix-mode')).toBe(false);
+    expect(store.dispatch).toHaveBeenCalledTimes(1);
+});
+
+test('does not poll every 5s and keeps LKG / session alive on 503, 401 ASSERTION_INVALID, and 403 without LOGOUT_SUCCESS', async () => {
+    jest.useFakeTimers();
+    const store = require('stores/redux_store').default;
+    try {
+        renderShell();
+        await ready();
+        expect(shell).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            jest.advanceTimersByTime(20_000);
+        });
+        expect(shell).toHaveBeenCalledTimes(1);
+
+        shell.mockRejectedValueOnce(new client.ShellError(503, 'PHOENIX_AUTHORITY_UNAVAILABLE'));
+        await act(async () => {
+            window.dispatchEvent(new Event(NATIVE_SESSION_CLEARED));
+        });
+        expect(screen.getByText('Chat content')).toBeInTheDocument();
+        expect(store.dispatch).not.toHaveBeenCalled();
+
+        shell.mockRejectedValueOnce(new client.ShellError(401, 'ASSERTION_INVALID'));
+        await act(async () => {
+            window.dispatchEvent(new Event(NATIVE_SESSION_CLEARED));
+        });
+        expect(screen.getByText('Chat content')).toBeInTheDocument();
+        expect(store.dispatch).not.toHaveBeenCalled();
+
+        shell.mockRejectedValueOnce(new client.ShellError(403, 'APP_NOT_ALLOWED'));
+        await act(async () => {
+            window.dispatchEvent(new Event(NATIVE_SESSION_CLEARED));
+        });
+        expect(await screen.findByRole('alert')).toHaveTextContent('Bạn chưa được cấp quyền sử dụng Chat.');
+        expect(store.dispatch).not.toHaveBeenCalled();
+    } finally {
+        jest.useRealTimers();
+    }
 });
 
 // Break: panels reachable only by mouse, arrows that do not move/select with sequential ETags,

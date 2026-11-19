@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,21 +22,94 @@ type SessionLookup interface {
 	SessionFromRequest(ctx context.Context, r *http.Request) (string, string, string, bool)
 }
 
+const (
+	shellCacheTTL = 600 * time.Second
+	shellLKGTTL   = 900 * time.Second
+)
+
+type cachedShellEntry struct {
+	sessionID string
+	sub       string
+	tenantID  string
+	status    int
+	contentType string
+	etag      string
+	body      []byte
+	freshAt   time.Time
+	lkgUntil  time.Time
+}
+
 // ShellService is the native BFF of design §6.7. The browser never supplies tenant, sub or sid:
 // they come from the immutable session binding, and every Gateway call uses a fresh HMAC assertion
-// bound to one operation audience. Upstream 401/403/409 are preserved, never wrapped as 502.
+// bound to one operation audience. Upstream 401/403/409 are preserved, 1x ASSERTION_INVALID is
+// retried and repeated ASSERTION_INVALID maps to 502 Bad Gateway.
 type ShellService struct {
 	Policy     *Policy
 	Sessions   SessionLookup
 	Signer     *BridgeSigner
 	GatewayURL string
 	SiteOrigin string
-	LogoutURL  string // Gateway global logout entry (public URL), advertised to the shell
+	LogoutURL  string
 	HTTP       *http.Client
+	Now        func() time.Time
 	Audit      func(event string, fields map[string]string)
+
+	mu    sync.RWMutex
+	cache map[string]cachedShellEntry
 }
 
 const maxShellBody = 4096
+
+func (s *ShellService) nowTime() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// InvalidateSession drops cached shell entries for a native session id.
+func (s *ShellService) InvalidateSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.cache {
+		if v.sessionID == sessionID {
+			delete(s.cache, k)
+		}
+	}
+}
+
+// InvalidateSubject drops cached shell entries for a federated subject.
+func (s *ShellService) InvalidateSubject(sub string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.cache {
+		if v.sub == sub {
+			delete(s.cache, k)
+		}
+	}
+}
+
+// InvalidateTenant drops cached shell entries for a tenant id (or all if empty).
+func (s *ShellService) InvalidateTenant(tenantID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tenantID == "" {
+		s.cache = nil
+		return
+	}
+	for k, v := range s.cache {
+		if v.tenantID == tenantID {
+			delete(s.cache, k)
+		}
+	}
+}
+
+// InvalidateAll clears the entire shell cache.
+func (s *ShellService) InvalidateAll() {
+	s.mu.Lock()
+	s.cache = nil
+	s.mu.Unlock()
+}
 
 func (s *ShellService) actor(w http.ResponseWriter, r *http.Request) (ActorContext, string, bool) {
 	sid, uid, csrf, ok := s.Sessions.SessionFromRequest(r.Context(), r)
@@ -43,7 +117,7 @@ func (s *ShellService) actor(w http.ResponseWriter, r *http.Request) (ActorConte
 		WriteError(w, ErrNoActor, s.Audit)
 		return ActorContext{}, "", false
 	}
-	actor, err := s.Policy.ResolveActor(r.Context(), sid, uid)
+	actor, err := s.Policy.ResolveActor(WithRequestMethod(r.Context(), r.Method), sid, uid)
 	if err != nil {
 		WriteError(w, err, s.Audit)
 		return ActorContext{}, "", false
@@ -55,19 +129,47 @@ func (s *ShellService) actor(w http.ResponseWriter, r *http.Request) (ActorConte
 	return actor, csrf, true
 }
 
-// proxy posts {appCode, assertion, ...extra} to a Gateway bridge route and relays status and body.
-func (s *ShellService) proxy(w http.ResponseWriter, r *http.Request, path, audience string, actor ActorContext, extra map[string]any, header http.Header) {
+func isAssertionInvalidBody(data []byte) bool {
+	var parsed struct {
+		Code  string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &parsed) != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Code, "ASSERTION_INVALID") || strings.EqualFold(parsed.Error.Code, "ASSERTION_INVALID")
+}
+
+func (s *ShellService) writeShellResponse(w http.ResponseWriter, status int, contentType, etag string, data []byte) {
+	w.Header().Set("Cache-Control", "no-store")
+	if s.LogoutURL != "" {
+		w.Header().Set("X-Phoenix-Logout-Url", s.LogoutURL)
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
+func (s *ShellService) doBridge(ctx context.Context, path, audience string, actor ActorContext, extra map[string]any, header http.Header) (*http.Response, []byte, error) {
 	payload := map[string]any{"appCode": BridgeAppCode, "assertion": s.Signer.Sign(audience, "", actor.Sub, actor.TenantID, actor.SID)}
 	for k, v := range extra {
 		payload[k] = v
 	}
 	body, _ := json.Marshal(payload)
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.GatewayURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, s.GatewayURL+path, bytes.NewReader(body))
 	if err != nil {
-		WriteError(w, newErr(http.StatusServiceUnavailable, CodeAuthorityDown, "shell unavailable"), s.Audit)
-		return
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, vs := range header {
@@ -77,25 +179,74 @@ func (s *ShellService) proxy(w http.ResponseWriter, r *http.Request, path, audie
 	}
 	resp, err := s.HTTP.Do(req)
 	if err != nil {
-		WriteError(w, wrapErr(http.StatusServiceUnavailable, CodeAuthorityDown, "shell unavailable", err), s.Audit)
-		return
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	w.Header().Set("Cache-Control", "no-store")
-	if s.LogoutURL != "" {
-		w.Header().Set("X-Phoenix-Logout-Url", s.LogoutURL)
+	return resp, data, nil
+}
+
+// proxy posts {appCode, assertion, ...extra} to a Gateway bridge route and relays status and body.
+// Read requests (`cacheKey != ""`) cache 200 answers for 600s and fall back to LKG up to 900s on outage.
+func (s *ShellService) proxy(w http.ResponseWriter, r *http.Request, path, audience string, actor ActorContext, extra map[string]any, header http.Header, cacheKey string) {
+	now := s.nowTime()
+	if cacheKey != "" {
+		s.mu.RLock()
+		entry, ok := s.cache[cacheKey]
+		s.mu.RUnlock()
+		if ok && now.Before(entry.freshAt) {
+			if inm := r.Header.Get("If-None-Match"); inm != "" && entry.etag != "" && inm == entry.etag {
+				s.writeShellResponse(w, http.StatusNotModified, entry.contentType, entry.etag, nil)
+				return
+			}
+			s.writeShellResponse(w, entry.status, entry.contentType, entry.etag, entry.body)
+			return
+		}
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	} else {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	resp, data, err := s.doBridge(r.Context(), path, audience, actor, extra, header)
+	if err == nil && resp.StatusCode == http.StatusUnauthorized && isAssertionInvalidBody(data) {
+		// Re-sign assertion once; repeated rejection indicates bridge credential mismatch (502, never 401).
+		resp, data, err = s.doBridge(r.Context(), path, audience, actor, extra, header)
+		if err == nil && resp.StatusCode == http.StatusUnauthorized && isAssertionInvalidBody(data) {
+			s.writeShellResponse(w, http.StatusBadGateway, "application/json; charset=utf-8", "", []byte(`{"code":"ASSERTION_INVALID","message":"gateway rejected bridge assertion"}`))
+			return
+		}
 	}
-	if et := resp.Header.Get("ETag"); et != "" {
-		w.Header().Set("ETag", et)
+
+	if err != nil || resp.StatusCode >= 500 {
+		if cacheKey != "" {
+			s.mu.RLock()
+			lkg, ok := s.cache[cacheKey]
+			s.mu.RUnlock()
+			if ok && now.Before(lkg.lkgUntil) {
+				s.writeShellResponse(w, lkg.status, lkg.contentType, lkg.etag, lkg.body)
+				return
+			}
+		}
+		WriteError(w, wrapErr(http.StatusServiceUnavailable, CodeAuthorityDown, "shell unavailable", err), s.Audit)
+		return
 	}
-	w.WriteHeader(resp.StatusCode) // 200/304/401/403/409 pass through unchanged
-	_, _ = w.Write(data)
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		s.InvalidateSession(actor.SessionID)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	etag := resp.Header.Get("ETag")
+	if cacheKey != "" && resp.StatusCode == http.StatusOK {
+		s.mu.Lock()
+		if s.cache == nil {
+			s.cache = map[string]cachedShellEntry{}
+		}
+		s.cache[cacheKey] = cachedShellEntry{
+			sessionID: actor.SessionID, sub: actor.Sub, tenantID: actor.TenantID,
+			status: resp.StatusCode, contentType: ct, etag: etag, body: data,
+			freshAt: now.Add(shellCacheTTL), lkgUntil: now.Add(shellLKGTTL),
+		}
+		s.mu.Unlock()
+	}
+	s.writeShellResponse(w, resp.StatusCode, ct, etag, data)
 }
 
 // ShellContext handles GET /phoenix/shell-context.
@@ -104,7 +255,7 @@ func (s *ShellService) ShellContext(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.proxy(w, r, "/internal/ui/shell-context", AudienceShellContext, actor, nil, nil)
+	s.proxy(w, r, "/internal/ui/shell-context", AudienceShellContext, actor, nil, nil, actor.SessionID+":"+actor.TenantID+":context")
 }
 
 // ShellNavigation handles GET /phoenix/shell-navigation (If-None-Match is relayed).
@@ -117,7 +268,7 @@ func (s *ShellService) ShellNavigation(w http.ResponseWriter, r *http.Request) {
 	if inm := r.Header.Get("If-None-Match"); inm != "" && len(inm) < 256 {
 		h.Set("If-None-Match", inm)
 	}
-	s.proxy(w, r, "/internal/ui/shell-navigation", AudienceShellNav, actor, nil, h)
+	s.proxy(w, r, "/internal/ui/shell-navigation", AudienceShellNav, actor, nil, h, actor.SessionID+":"+actor.TenantID+":nav")
 }
 
 // UIPreferences handles PATCH /phoenix/ui-preferences. It needs the native CSRF token, a same-origin
@@ -145,7 +296,7 @@ func (s *ShellService) UIPreferences(w http.ResponseWriter, r *http.Request) {
 		Density *string `json:"density"`
 	}
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields() // tenant, sub, sid and anything else from the browser is refused
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
@@ -170,7 +321,8 @@ func (s *ShellService) UIPreferences(w http.ResponseWriter, r *http.Request) {
 	if im := r.Header.Get("If-Match"); im != "" && len(im) < 128 {
 		h.Set("If-Match", im)
 	}
-	s.proxy(w, r, "/internal/ui/preferences", AudienceUIPreferences, actor, map[string]any{"preference": pref}, h)
+	s.InvalidateSession(actor.SessionID)
+	s.proxy(w, r, "/internal/ui/preferences", AudienceUIPreferences, actor, map[string]any{"preference": pref}, h, "")
 }
 
 // Register mounts the shell routes.
