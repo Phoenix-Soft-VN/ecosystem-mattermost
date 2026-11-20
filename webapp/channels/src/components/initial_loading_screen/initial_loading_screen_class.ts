@@ -119,7 +119,7 @@ export class InitialLoadingScreenClass {
         this.loadingAnimationElement.className = LOADING_CLASS_FOR_ANIMATION;
     }
 
-    public stop(pageType: string) {
+    public stop(pageType: string, immediate = false) {
         if (!this.loadingScreenElement || !this.loadingAnimationElement) {
             return;
         }
@@ -133,6 +133,13 @@ export class InitialLoadingScreenClass {
                 page_type: pageType,
             },
         });
+
+        // Error recovery must remain clickable even when CSS animations are
+        // paused or their animationend event is never delivered.
+        if (immediate) {
+            this.destroy();
+            return;
+        }
 
         // Calculate how long the loading screen has been visible
         const elapsedTime = this.startTime ? Date.now() - this.startTime : 0;

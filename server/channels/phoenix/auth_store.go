@@ -127,21 +127,27 @@ func (s *Store) SessionBindingByID(ctx context.Context, sessionID string) (Sessi
 	return b, err
 }
 
-// UpdateSessionTokens persists rotated Gateway OIDC tokens and sliding idle expiry after refresh.
-func (s *Store) UpdateSessionTokens(ctx context.Context, sessionID, accessEnc, refreshEnc string, accessExpMS, idleExpMS, outageSinceMS int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE phoenix_session_bindings
+// LockedSessionBinding keeps refresh writes on the transaction owning the row lock.
+type LockedSessionBinding struct {
+	SessionBinding
+	tx *sql.Tx
+}
+
+// UpdateSessionTokens persists rotated tokens before releasing the refresh lock.
+func (b *LockedSessionBinding) UpdateSessionTokens(ctx context.Context, accessEnc, refreshEnc string, accessExpMS, idleExpMS, outageSinceMS int64) error {
+	_, err := b.tx.ExecContext(ctx, `UPDATE phoenix_session_bindings
 		SET access_token_enc=$2, refresh_token_enc=CASE WHEN $3<>'' THEN $3 ELSE refresh_token_enc END,
 		    access_expires_at=$4, idle_expires_at=$5, outage_since=$6
 		WHERE session_id=$1`,
-		sessionID, accessEnc, refreshEnc, accessExpMS, idleExpMS, outageSinceMS)
+		b.SessionID, accessEnc, refreshEnc, accessExpMS, idleExpMS, outageSinceMS)
 	return err
 }
 
 // MarkSessionOutage records when Gateway outage started (if not already set).
-func (s *Store) MarkSessionOutage(ctx context.Context, sessionID string, sinceMS int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE phoenix_session_bindings
+func (b *LockedSessionBinding) MarkSessionOutage(ctx context.Context, sinceMS int64) error {
+	_, err := b.tx.ExecContext(ctx, `UPDATE phoenix_session_bindings
 		SET outage_since=CASE WHEN outage_since=0 THEN $2 ELSE outage_since END
-		WHERE session_id=$1`, sessionID, sinceMS)
+		WHERE session_id=$1`, b.SessionID, sinceMS)
 	return err
 }
 
@@ -164,7 +170,7 @@ func (s *Store) ExpireAccessBySub(ctx context.Context, issuer, sub string) ([]st
 }
 
 // WithLockedSessionBinding runs fn inside a DB transaction holding FOR UPDATE on the session binding row.
-func (s *Store) WithLockedSessionBinding(ctx context.Context, sessionID string, fn func(SessionBinding) error) error {
+func (s *Store) WithLockedSessionBinding(ctx context.Context, sessionID string, fn func(*LockedSessionBinding) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -180,7 +186,7 @@ func (s *Store) WithLockedSessionBinding(ctx context.Context, sessionID string, 
 	if err != nil {
 		return err
 	}
-	if err := fn(b); err != nil {
+	if err := fn(&LockedSessionBinding{SessionBinding: b, tx: tx}); err != nil {
 		return err
 	}
 	return tx.Commit()

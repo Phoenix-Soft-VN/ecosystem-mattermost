@@ -280,7 +280,7 @@ export default function PhoenixShell({children}: Props) {
                 authorityFailed.current = true;
                 clearTheme(document.documentElement);
                 setPhase({name: 'error', error});
-                InitialLoadingScreen.stop('phoenix-authority');
+                InitialLoadingScreen.stop('phoenix-authority', true);
                 const now = Date.now();
                 if (lastTerminalLogoutAt === 0 || now < lastTerminalLogoutAt || now - lastTerminalLogoutAt >= LOGOUT_GUARD_MS) {
                     lastTerminalLogoutAt = now;
@@ -291,11 +291,11 @@ export default function PhoenixShell({children}: Props) {
                 authorityFailed.current = true;
                 clearTheme(document.documentElement);
                 setPhase({name: 'error', error});
-                InitialLoadingScreen.stop('phoenix-authority');
+                InitialLoadingScreen.stop('phoenix-authority', true);
             } else {
                 // 401 ASSERTION_INVALID / 502 / 503 / 504: preserve existing LKG shell if available, never log out.
                 setPhase((prev) => (prev.name === 'ready' ? prev : {name: 'error', error}));
-                InitialLoadingScreen.stop('phoenix-authority');
+                InitialLoadingScreen.stop('phoenix-authority', true);
             }
         } finally {
             requestActive.current = false;

@@ -356,13 +356,15 @@ func (a *Authority) checkOIDCLazyRefresh(ctx context.Context, actor ActorContext
 
 	var refreshedErr error
 	var refreshed bool
-	lockErr := a.Store.WithLockedSessionBinding(ctx, actor.SessionID, func(b SessionBinding) error {
+	var inactive bool
+	// Bound lock waits as well as the HTTP exchange, including requests without a deadline.
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	lockErr := a.Store.WithLockedSessionBinding(refreshCtx, actor.SessionID, func(b *LockedSessionBinding) error {
 		nowLocked := a.nowTime().UnixMilli()
 		if (b.AbsoluteExpiresAtMS > 0 && nowLocked >= b.AbsoluteExpiresAtMS) ||
 			(b.IdleExpiresAtMS > 0 && nowLocked >= b.IdleExpiresAtMS) {
-			if a.OnInactive != nil {
-				a.OnInactive(ctx, actor.SessionID)
-			}
+			inactive = true
 			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "session expired")
 			return nil
 		}
@@ -372,15 +374,13 @@ func (a *Authority) checkOIDCLazyRefresh(ctx context.Context, actor ActorContext
 		refreshed = true
 		rt, derr := a.openToken(b.RefreshTokenEnc)
 		if derr != nil || rt == "" {
-			if a.OnInactive != nil {
-				a.OnInactive(ctx, actor.SessionID)
-			}
+			inactive = true
 			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "invalid session token")
 			return nil
 		}
-		newAccess, newRefresh, expSec, status, callErr := a.postRefresh(ctx, rt)
+		newAccess, newRefresh, expSec, status, callErr := a.postRefresh(refreshCtx, rt)
 		if callErr != nil {
-			refreshedErr = a.outageResult(ctx, b, nowLocked)
+			refreshedErr = a.outageResult(refreshCtx, b, nowLocked)
 			return nil
 		}
 		switch {
@@ -405,12 +405,9 @@ func (a *Authority) checkOIDCLazyRefresh(ctx context.Context, actor ActorContext
 			if b.AbsoluteExpiresAtMS > 0 && nextIdle > b.AbsoluteExpiresAtMS {
 				nextIdle = b.AbsoluteExpiresAtMS
 			}
-			_ = a.Store.UpdateSessionTokens(ctx, b.SessionID, aEnc, rEnc, nowLocked+expSec*1000, nextIdle, 0)
-			return nil
+			return b.UpdateSessionTokens(refreshCtx, aEnc, rEnc, nowLocked+expSec*1000, nextIdle, 0)
 		case status == http.StatusBadRequest || status == http.StatusUnauthorized:
-			if a.OnInactive != nil {
-				a.OnInactive(ctx, actor.SessionID)
-			}
+			inactive = true
 			refreshedErr = newErr(http.StatusUnauthorized, CodeAuthInvalid, "gateway session ended")
 			return nil
 		case status == http.StatusForbidden:
@@ -418,21 +415,28 @@ func (a *Authority) checkOIDCLazyRefresh(ctx context.Context, actor ActorContext
 			refreshedErr = ErrAccessDenied
 			return nil
 		default:
-			refreshedErr = a.outageResult(ctx, b, nowLocked)
+			refreshedErr = a.outageResult(refreshCtx, b, nowLocked)
 			return nil
 		}
 	})
 	if lockErr != nil {
 		return ErrAuthorityUnavailable, refreshed
 	}
+	// Native revocation deletes the binding through another connection. Run it only
+	// after commit has released the row lock, including invalid_grant and expiry.
+	if inactive && a.OnInactive != nil {
+		a.OnInactive(ctx, actor.SessionID)
+	}
 	return refreshedErr, refreshed
 }
 
-func (a *Authority) outageResult(ctx context.Context, b SessionBinding, nowMS int64) error {
+func (a *Authority) outageResult(ctx context.Context, b *LockedSessionBinding, nowMS int64) error {
 	since := b.OutageSinceMS
 	if since == 0 {
 		since = nowMS
-		_ = a.Store.MarkSessionOutage(ctx, b.SessionID, since)
+		if err := b.MarkSessionOutage(ctx, since); err != nil {
+			return ErrAuthorityUnavailable
+		}
 	}
 	if isSafeHTTPMethod(RequestMethodFrom(ctx)) && nowMS-since <= oidcOutageReadGraceMS {
 		return nil
