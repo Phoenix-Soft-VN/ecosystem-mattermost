@@ -322,7 +322,7 @@ describe('Unified Chat Header (Phase 1)', () => {
 
         // Opening menus preserves distinct roles between trigger (button) and menu (menu).
         await user.click(within(header).getByRole('button', {name: 'Ứng dụng'}));
-        expect(screen.getByRole('menu', {name: 'Ứng dụng'})).toBeInTheDocument();
+        expect(screen.getByRole('dialog', {name: 'Ứng dụng của bạn'})).toBeInTheDocument();
         expect(screen.getByRole('button', {name: 'Ứng dụng'})).toBeInTheDocument();
         await user.keyboard('{Escape}');
 

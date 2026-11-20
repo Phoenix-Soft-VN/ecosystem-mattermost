@@ -14,10 +14,14 @@ jest.mock('utils/utils', () => ({applyTheme: jest.fn()}));
 jest.mock('stores/redux_store', () => ({__esModule: true, default: {dispatch: jest.fn()}}));
 
 const snapshot: ShellSnapshot = {
-    appCode: 'chat', tenant: {id: 'tenant-a', displayName: 'Tenant A'}, themeRevision: 1, resolvedThemeHash: 'hash-a',
+    appCode: 'chat',
+    tenant: {id: 'tenant-a', displayName: 'Tenant A'},
+    themeRevision: 1,
+    resolvedThemeHash: 'hash-a',
     theme: {color: {light: {surface: '#ffffff', text: '#111111'}, dark: {surface: '#111111', text: '#ffffff'}}},
     footer: {presentation: 'compact', operator: {displayName: 'Operator'}, tenant: {displayName: 'Tenant A'}, links: []},
-    account: {displayName: 'A1', avatarUrl: null}, preference: {mode: 'light', density: 'comfortable'},
+    account: {displayName: 'A1', avatarUrl: null},
+    preference: {mode: 'light', density: 'comfortable'},
 };
 const LOGOUT = 'https://auth.phoenixsoft.vn/oauth2/logout';
 const shell = client.fetchShellContext as jest.MockedFunction<typeof client.fetchShellContext>;
@@ -112,14 +116,47 @@ test('launcher uses ready navigation and authority failure removes sensitive con
     const view = renderShell();
     await ready();
     await user.click(appsTrigger());
-    expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveAttribute('href', 'https://tasks.phoenixsoft.vn');
-    expect(screen.queryByRole('menuitem', {name: 'Files pending'})).toBeNull();
+    expect(screen.getByRole('link', {name: 'Tasks'})).toHaveAttribute('href', 'https://tasks.phoenixsoft.vn');
+    expect(screen.queryByRole('link', {name: 'Files pending'})).toBeNull();
     view.unmount();
     shell.mockRejectedValue(new client.ShellError(403, 'CHAT_ACCESS_DENIED'));
     render(<PhoenixShell><div>{'Sensitive chat A'}</div></PhoenixShell>);
     expect(await screen.findByRole('alert')).toHaveTextContent('Bạn chưa được cấp quyền sử dụng Chat.');
     expect(screen.queryByText('Sensitive chat A')).toBeNull();
     expect(document.documentElement.hasAttribute('data-phoenix-mode')).toBe(false);
+});
+
+test('Portal-style launcher searches verified tiles, marks Chat current and keeps unavailable apps inert', async () => {
+    const user = userEvent.setup();
+    mockNavigation([
+        {appCode: 'tasks', label: 'Tasks', description: 'Boards', iconKey: 'tasks', state: 'ready', launchUrl: 'https://tasks.phoenixsoft.vn'},
+        {appCode: 'chat', label: 'Chat', description: 'Messages', iconKey: 'chat', state: 'ready', launchUrl: 'https://chat.phoenixsoft.vn'},
+        {appCode: 'files', label: 'Files', description: 'Documents', iconKey: 'files', state: 'provisioning'},
+        {appCode: 'crm', label: 'CRM', description: 'Customers', iconKey: 'crm', state: 'disabled'},
+    ]);
+    renderShell();
+    await ready();
+    await user.click(appsTrigger());
+    const panel = screen.getByRole('dialog', {name: 'Ứng dụng của bạn'});
+    expect(within(panel).getByText('Tenant A')).toBeVisible();
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(4);
+    expect(panel.querySelectorAll('.phoenix-shell__launcher-icon svg')).toHaveLength(4);
+    expect(within(panel).getByText('Chat').closest('[aria-current]')).toHaveAttribute('aria-current', 'page');
+    expect(within(panel).queryByRole('link', {name: 'Chat'})).toBeNull();
+    expect(within(panel).getByText('Đang chuẩn bị')).toBeVisible();
+    expect(within(panel).getByText('Chưa sẵn sàng')).toBeVisible();
+    const search = within(panel).getByRole('searchbox', {name: 'Tìm ứng dụng'});
+    expect(search).toHaveFocus();
+    await user.type(search, 'boards');
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(panel).getByRole('link', {name: 'Tasks'})).toBeVisible();
+    await user.clear(search);
+    await user.type(search, 'no matching app');
+    expect(within(panel).getByRole('status')).toHaveTextContent('Không tìm thấy ứng dụng.');
+    await user.click(within(panel).getByRole('button', {name: 'Đóng'}));
+    expect(appsTrigger()).toHaveFocus();
+    await user.click(appsTrigger());
+    expect(screen.getByRole('searchbox', {name: 'Tìm ứng dụng'})).toHaveValue('');
 });
 
 // Break: treating a missing enforced BFF as permission to render a fallback native shell.
@@ -145,7 +182,7 @@ test('U03 icon theme menu: closed header has launcher and theme icon trigger wit
     expect(within(header).getAllByText('Chat')).toHaveLength(1);
     expect(within(header).getByText('TA')).toBeVisible();
     expect(appsTrigger()).toHaveAttribute('aria-expanded', 'false');
-    expect(appsTrigger()).toHaveAttribute('aria-haspopup', 'menu');
+    expect(appsTrigger()).toHaveAttribute('aria-haspopup', 'dialog');
     const trigger = screen.getByRole('button', {name: 'Giao diện: Sáng'});
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
@@ -182,16 +219,16 @@ test('C02 panels are exclusive and dismiss with focus return', async () => {
     const open = () => screen.queryAllByRole('dialog').length + screen.queryAllByRole('menu').length;
 
     await user.click(appsTrigger());
-    expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveFocus();
+    expect(screen.getByRole('searchbox', {name: 'Tìm ứng dụng'})).toHaveFocus();
     await user.click(themeTrigger());
     expect(open()).toBe(1);
-    expect(screen.queryByRole('menu', {name: 'Ứng dụng'})).toBeNull();
+    expect(screen.queryByRole('dialog', {name: 'Ứng dụng của bạn'})).toBeNull();
     expect(appsTrigger()).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('menuitemradio', {name: 'Sáng'})).toHaveFocus();
     await user.click(appsTrigger());
     expect(open()).toBe(1);
     expect(screen.queryByRole('menu', {name: 'Giao diện'})).toBeNull();
-    expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveFocus();
+    expect(screen.getByRole('searchbox', {name: 'Tìm ứng dụng'})).toHaveFocus();
 
     // Escape closes each panel and returns focus to its own trigger.
     await user.keyboard('{Escape}');
@@ -203,10 +240,10 @@ test('C02 panels are exclusive and dismiss with focus return', async () => {
     expect(themeTrigger()).toHaveFocus();
 
     // An outside press closes the panel and, when nothing else takes focus, returns it to the trigger.
-    const dismissByPress = async (trigger: () => HTMLElement, menuName: string) => {
+    const dismissByPress = async (trigger: () => HTMLElement, menuName: string, role: 'menu' | 'dialog' = 'menu') => {
         await user.click(trigger());
-        await user.click(screen.getByRole('menu', {name: menuName}));
-        expect(screen.getByRole('menu', {name: menuName})).toBeVisible();
+        await user.click(screen.getByRole(role, {name: menuName}));
+        expect(screen.getByRole(role, {name: menuName})).toBeVisible();
         await user.click(screen.getByText('Chat content'));
         expect(open()).toBe(0);
         await waitFor(() => expect(trigger()).toHaveFocus());
@@ -218,7 +255,7 @@ test('C02 panels are exclusive and dismiss with focus return', async () => {
         expect(open()).toBe(0);
         expect(trigger()).toHaveFocus();
     };
-    await dismissByPress(appsTrigger, 'Ứng dụng');
+    await dismissByPress(appsTrigger, 'Ứng dụng của bạn', 'dialog');
     await dismissByPress(themeTrigger, 'Giao diện');
 
     // Pressing another focusable control keeps focus there instead of stealing it back.
@@ -311,7 +348,7 @@ test('C04 only granted, safe navigation and footer URLs are linked', async () =>
     const view = renderShell();
     await ready();
     await user.click(appsTrigger());
-    expect(screen.getAllByRole('menuitem').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Tasks', 'https://tasks.phoenixsoft.vn']]);
+    expect(within(screen.getByRole('dialog', {name: 'Ứng dụng của bạn'})).getAllByRole('link').map((a) => [a.getAttribute('aria-label'), a.getAttribute('href')])).toEqual([['Tasks', 'https://tasks.phoenixsoft.vn']]);
     view.unmount();
 });
 
@@ -399,25 +436,19 @@ test('U03 keyboard: Tab, Enter/Space, arrows with sequential ETags, resize focus
         renderShell();
         await ready();
 
-        // Launcher: Tab, Enter, arrows with wrap, Enter follows the link, Escape returns focus.
+        // Launcher dialog: open into search, Tab through safe links, Enter follows one.
         await user.tab();
         expect(appsTrigger()).toHaveFocus();
         await user.keyboard('{Enter}');
-        expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveFocus();
-        await user.keyboard('{ArrowDown}');
-        expect(screen.getByRole('menuitem', {name: 'Portal'})).toHaveFocus();
-        await user.keyboard('{ArrowDown}');
-        expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveFocus();
-        await user.keyboard('{ArrowUp}');
-        expect(screen.getByRole('menuitem', {name: 'Portal'})).toHaveFocus();
-        await user.keyboard('{Home}');
-        expect(screen.getByRole('menuitem', {name: 'Tasks'})).toHaveFocus();
-        await user.keyboard('{End}');
-        expect(screen.getByRole('menuitem', {name: 'Portal'})).toHaveFocus();
+        expect(screen.getByRole('searchbox', {name: 'Tìm ứng dụng'})).toHaveFocus();
+        await user.tab();
+        expect(screen.getByRole('link', {name: 'Tasks'})).toHaveFocus();
+        await user.tab();
+        expect(screen.getByRole('link', {name: 'Portal'})).toHaveFocus();
         await user.keyboard('{Enter}');
         expect(followed).toEqual(['https://portal.phoenixsoft.vn']);
         await user.keyboard('{Escape}');
-        expect(screen.queryByRole('menu')).toBeNull();
+        expect(screen.queryByRole('dialog', {name: 'Ứng dụng của bạn'})).toBeNull();
         expect(appsTrigger()).toHaveFocus();
 
         // Theme menu: Tab, Space opens menu, arrows select dark ("7") then system ("8") and retain focus across resize.

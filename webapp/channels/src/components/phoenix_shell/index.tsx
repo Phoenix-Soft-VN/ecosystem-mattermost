@@ -6,11 +6,12 @@ import {WithTooltip} from '@mattermost/shared/components/tooltip';
 import {UserTypes} from 'mattermost-redux/action_types';
 import store from 'stores/redux_store';
 import InitialLoadingScreen from 'components/initial_loading_screen';
-import {HeaderSlotsProvider, HeaderSlotTarget, useCompactChannelTools, useHasSlotContent} from './header_slots';
-import {registerPhoenixSessionLifecycle, NATIVE_SESSION_CLEARED} from './session_lifecycle';
 
+import AppLauncher from './app_launcher';
 import type {AppTile, ColorMode, Navigation, ShellSnapshot} from './client';
 import {ERROR_COPY, ShellError, fetchNavigation, fetchShellContext, patchPreference} from './client';
+import {HeaderSlotsProvider, HeaderSlotTarget, useCompactChannelTools, useHasSlotContent} from './header_slots';
+import {registerPhoenixSessionLifecycle, NATIVE_SESSION_CLEARED} from './session_lifecycle';
 import type {ResolvedMode} from './theme';
 import {applyTheme, clearTheme, resolveMode} from './theme';
 
@@ -399,7 +400,7 @@ export default function PhoenixShell({children}: Props) {
         if (openPopover === 'theme') {
             target = panel?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]');
         } else if (openPopover === 'apps') {
-            target = panel?.querySelector<HTMLElement>('[role="menuitem"]');
+            target = panel?.querySelector<HTMLElement>('input[type="search"]');
         } else if (openPopover === 'utilities') {
             target = panel?.querySelector<HTMLElement>('button, [href], [tabindex="0"]');
         }
@@ -509,25 +510,6 @@ export default function PhoenixShell({children}: Props) {
         }
     };
 
-    const onMenuKeyDown = (event: React.KeyboardEvent<HTMLUListElement>) => {
-        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
-        const from = items.indexOf(event.target as HTMLElement);
-        let to = -1;
-        if (event.key === 'ArrowDown') {
-            to = (from + 1) % items.length;
-        } else if (event.key === 'ArrowUp') {
-            to = (from <= 0 ? items.length : from) - 1;
-        } else if (event.key === 'Home') {
-            to = 0;
-        } else if (event.key === 'End') {
-            to = items.length - 1;
-        }
-        if (items.length && to >= 0) {
-            event.preventDefault();
-            items[to].focus();
-        }
-    };
-
     const onModesKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         const radios = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]'));
         const from = radios.indexOf(event.target as HTMLElement);
@@ -585,7 +567,7 @@ export default function PhoenixShell({children}: Props) {
     const {snapshot, nav} = phase;
     const resolved = resolveMode(snapshot.preference.mode, prefersDark);
     const logo = resolved === 'dark' ? snapshot.tenant?.logoDarkUrl || snapshot.tenant?.logoLightUrl : snapshot.tenant?.logoLightUrl || snapshot.tenant?.logoDarkUrl;
-    const apps: AppTile[] = (nav?.apps ?? []).filter((a) => a.state === 'ready' && safeHttps(a.launchUrl));
+    const apps: AppTile[] = (nav?.apps ?? []).map((app) => ({...app, launchUrl: app.state === 'ready' && safeHttps(app.launchUrl) ? app.launchUrl : undefined}));
     const footerParties = [snapshot.footer.operator, snapshot.footer.tenant].filter(Boolean);
     const tenantName = snapshot.tenant?.displayName || 'Phoenix Soft';
     const currentModeLabel = MODES.find((m) => m.value === snapshot.preference.mode)?.label ?? 'Sáng';
@@ -599,6 +581,7 @@ export default function PhoenixShell({children}: Props) {
                         logo={logo}
                         tenantName={tenantName}
                         apps={apps}
+                        currentApp={nav?.currentApp || 'chat'}
                         snapshot={snapshot}
                         resolved={resolved}
                         themeTriggerLabel={themeTriggerLabel}
@@ -613,7 +596,6 @@ export default function PhoenixShell({children}: Props) {
                         togglePopover={togglePopover}
                         onControlsKeyDown={onControlsKeyDown}
                         onControlsBlur={onControlsBlur}
-                        onMenuKeyDown={onMenuKeyDown}
                         onModesKeyDown={onModesKeyDown}
                         select={select}
                     />
@@ -645,6 +627,7 @@ type HeaderBarProps = {
     logo: string | null | undefined;
     tenantName: string;
     apps: AppTile[];
+    currentApp: string;
     snapshot: ShellSnapshot;
     resolved: ResolvedMode;
     themeTriggerLabel: string;
@@ -659,7 +642,6 @@ type HeaderBarProps = {
     togglePopover: (id: PopoverId) => void;
     onControlsKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
     onControlsBlur: (event: React.FocusEvent<HTMLDivElement>) => void;
-    onMenuKeyDown: (event: React.KeyboardEvent<HTMLUListElement>) => void;
     onModesKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
     select: (value: ColorMode) => void;
 };
@@ -668,6 +650,7 @@ function PhoenixHeaderBar({
     logo,
     tenantName,
     apps,
+    currentApp,
     snapshot,
     resolved,
     themeTriggerLabel,
@@ -682,7 +665,6 @@ function PhoenixHeaderBar({
     togglePopover,
     onControlsKeyDown,
     onControlsBlur,
-    onMenuKeyDown,
     onModesKeyDown,
     select,
 }: HeaderBarProps) {
@@ -828,43 +810,20 @@ function PhoenixHeaderBar({
                             }}
                             type='button'
                             aria-label='Ứng dụng'
-                            aria-haspopup='menu'
+                            aria-haspopup='dialog'
                             aria-expanded={openPopover === 'apps'}
                             aria-controls={openPopover === 'apps' ? appsPanelId : undefined}
                             onClick={() => togglePopover('apps')}
                         ><LauncherIcon/></button>
                     </WithTooltip>
                     {openPopover === 'apps' && (
-                        <ul
+                        <AppLauncher
                             id={appsPanelId}
-                            className='phoenix-shell__popover phoenix-shell__menu'
-                            role='menu'
-                            aria-label='Ứng dụng'
-                            data-phoenix-popover='apps'
-                            tabIndex={-1}
-                            onKeyDown={onMenuKeyDown}
-                        >
-                            {apps.map((a) => (
-                                <li
-                                    key={a.appCode}
-                                    role='none'
-                                >
-                                    <a
-                                        className='phoenix-shell__menu-item'
-                                        role='menuitem'
-                                        tabIndex={-1}
-                                        href={a.launchUrl}
-                                        rel='noopener noreferrer'
-                                    >{a.label}</a>
-                                </li>
-                            ))}
-                            {apps.length === 0 && (
-                                <li
-                                    className='phoenix-shell__menu-empty'
-                                    role='none'
-                                >{'Bạn chưa được cấp ứng dụng'}</li>
-                            )}
-                        </ul>
+                            tenantName={tenantName}
+                            apps={apps}
+                            currentApp={currentApp}
+                            onClose={() => togglePopover('apps')}
+                        />
                     )}
                 </div>
                 <span

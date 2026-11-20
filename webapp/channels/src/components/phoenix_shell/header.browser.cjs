@@ -44,6 +44,8 @@ const SHORT = {width: 390, height: 280};
 
 const SOURCES = [
     path.join(__dirname, 'index.tsx'),
+    path.join(__dirname, 'app_launcher.tsx'),
+    path.join(__dirname, 'launcher_icons.tsx'),
     path.join(__dirname, 'header_slots.tsx'),
     path.join(__dirname, 'phoenix_shell.scss'),
     path.join(__dirname, 'client.ts'),
@@ -606,18 +608,20 @@ function measureLayout() {
         panel: null,
     };
     if (panel) {
-        const items = qa('.phoenix-shell__menu-item', panel);
+        const items = qa('.phoenix-shell__launcher-tile[href]', panel);
+        const grid = q('.phoenix-shell__launcher-grid', panel);
+        const scroller = grid && getComputedStyle(grid).overflowY === 'auto' ? grid : panel;
         const utilButtons = qa('button, #searchFormContainer', panel);
         out.panel = {
             kind: panel.getAttribute('data-phoenix-popover'),
             rect: rect(panel),
-            overflowY: getComputedStyle(panel).overflowY,
-            scrollHeight: panel.scrollHeight,
-            clientHeight: panel.clientHeight,
+            overflowY: getComputedStyle(scroller).overflowY,
+            scrollHeight: scroller.scrollHeight,
+            clientHeight: scroller.clientHeight,
             scrollWidth: panel.scrollWidth,
             clientWidth: panel.clientWidth,
             modes: radios.map((r) => ({rect: rect(r), borders: borders(r), corners: corners(r), label: r.textContent})),
-            items: items.map((i) => ({rect: rect(i), truncated: truncated(i)})),
+            items: items.map((i) => ({rect: rect(i), truncated: truncated(q('.phoenix-shell__launcher-name', i))})),
             utilButtons: utilButtons.map((b) => {
                 const r = rect(b);
                 let hit = null;
@@ -750,7 +754,7 @@ async function runH01(browser, c) {
                 } else if (k.state === 'apps') {
                     t.ok('launcher expanded and theme collapsed', m.launcherExpanded === 'true' && m.themeTrigger.expanded === 'false');
                     t.ok('menu items are at least 44px', p.items.length > 0 && p.items.every((i) => i.rect.h >= 44 - TOLERANCE), p.items.map((i) => i.rect.h));
-                    t.ok('pending apps are not offered', p.items.length === (k.tenantKey === 'long' ? 12 : 2), p.items.length);
+                    t.ok('only ready apps are offered as links', p.items.length === (k.tenantKey === 'long' ? 12 : 2), p.items.length);
                     if (k.tenantKey === 'long') {
                         t.ok('long menu label truncates', p.items.some((i) => i.truncated.scrollWidth > i.truncated.clientWidth && i.truncated.textOverflow === 'ellipsis'));
                     }
@@ -1071,24 +1075,27 @@ async function runH02(browser, c) {
                 await page.keyboard.press('Enter');
                 await page.waitForSelector('[data-phoenix-popover="apps"]');
                 f = await focused(page);
-                t.ok('Enter opens the menu and focuses the first item', f && f.role === 'menuitem' && f.text === 'Tasks', f);
-                await page.keyboard.press('ArrowDown');
-                t.ok('ArrowDown moves to the next item', (await focused(page)).text === 'Portal');
-                await page.keyboard.press('ArrowDown');
-                t.ok('ArrowDown wraps to the first item', (await focused(page)).text === 'Tasks');
-                await page.keyboard.press('ArrowUp');
-                t.ok('ArrowUp wraps to the last item', (await focused(page)).text === 'Portal');
-                await page.keyboard.press('Home');
-                t.ok('Home moves to the first item', (await focused(page)).text === 'Tasks');
-                const itemFocus = await page.evaluate(readColors, '.phoenix-shell__menu-item:focus');
+                t.ok('Enter opens the launcher dialog and focuses search', f && f.label === 'Tìm ứng dụng', f);
+                const input = page.locator('.phoenix-shell__launcher-search');
+                await input.fill('Portal');
+                t.ok('search filters the verified catalog', await page.locator('.phoenix-shell__launcher-tile').count() === 1);
+                await input.fill('not-in-catalog');
+                t.ok('empty search result is shown', await page.locator('[data-phoenix-popover="apps"] [role="status"]').textContent() === 'Không tìm thấy ứng dụng.');
+                await input.fill('');
+                await page.keyboard.press('Tab');
+                t.ok('Tab reaches the first ready tile', (await focused(page)).label === 'Tasks');
+                const itemFocus = await page.evaluate(readColors, '.phoenix-shell__launcher-tile:focus');
                 note.itemFocus = itemFocus;
-                t.ok('focused menu item is legible with a focus ring and no link underline', itemFocus && itemFocus.contrast >= 4.5 && itemFocus.outlineStyle === 'solid' && itemFocus.textDecoration === 'none', itemFocus);
+                t.ok('focused tile is legible with a focus ring and no link underline', itemFocus && itemFocus.contrast >= 4.5 && itemFocus.outlineStyle === 'solid' && itemFocus.textDecoration === 'none', itemFocus);
+                await page.keyboard.press('Tab');
+                t.ok('Tab skips pending apps and reaches Portal', (await focused(page)).label === 'Portal');
+                t.ok('each app tile has a Portal icon', await page.locator('.phoenix-shell__launcher-icon svg').count() === 3);
                 await page.mouse.move(0, 0);
-                const itemBox = await page.locator('.phoenix-shell__menu-item').nth(1).boundingBox();
+                const itemBox = await page.locator('.phoenix-shell__launcher-tile[href]').nth(1).boundingBox();
                 await page.mouse.move(itemBox.x + 8, itemBox.y + itemBox.height / 2);
-                const itemHover = await page.evaluate(readColors, '.phoenix-shell__menu-item:hover');
+                const itemHover = await page.evaluate(readColors, '.phoenix-shell__launcher-tile[href]:hover');
                 note.itemHover = itemHover;
-                t.ok('hovered menu item is legible and not a UA button face', itemHover && itemHover.contrast >= 4.5 && notFace(itemHover.effectiveBackground) && itemHover.textDecoration === 'none' && (dark ? itemHover.backgroundLuminance < 0.25 : true), itemHover);
+                t.ok('hovered tile is legible and not a UA button face', itemHover && itemHover.contrast >= 4.5 && notFace(itemHover.effectiveBackground) && itemHover.textDecoration === 'none' && (dark ? itemHover.backgroundLuminance < 0.25 : true), itemHover);
                 const before = await page.evaluate(() => window.chatEscapeSeen);
                 await page.keyboard.press('Escape');
                 f = await focused(page);
@@ -1151,7 +1158,7 @@ async function runH02(browser, c) {
                 await page.waitForSelector('[data-phoenix-popover="apps"]');
                 both = await page.evaluate(() => Array.from(document.querySelectorAll('[data-phoenix-popover]')).map((p) => p.getAttribute('data-phoenix-popover')));
                 f = await focused(page);
-                t.ok('opening the launcher closes the theme menu and focuses the menu', both.length === 1 && both[0] === 'apps' && f.role === 'menuitem', {both, f});
+                t.ok('opening the launcher closes the theme menu and focuses search', both.length === 1 && both[0] === 'apps' && f.label === 'Tìm ứng dụng', {both, f});
                 await page.click(TRIGGER.apps);
                 await until(page, 'wait#3', () => document.querySelectorAll('[data-phoenix-popover]').length === 0);
                 f = await focused(page);
