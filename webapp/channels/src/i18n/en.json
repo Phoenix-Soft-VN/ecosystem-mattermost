@@ -33659,6 +33659,10 @@
     "defaultMessage": "Set custom status text",
     "description": "Menu item label in the user account menu prompting the user to set a custom status; also read by screen readers."
   },
+  "userAccountMenu.switchAccountMenuItem.label": {
+    "defaultMessage": "Switch account",
+    "description": "Menu item in the user account menu that opens the Phoenix account chooser to switch to another saved account in the same workspace."
+  },
   "userGuideHelp.askTheCommunity": {
     "defaultMessage": "Ask the community",
     "description": "Menu item in the help menu linking to the Mattermost community forum."

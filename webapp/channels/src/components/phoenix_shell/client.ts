@@ -24,7 +24,7 @@ export type ShellSnapshot = {
 };
 
 export type AppTile = {appCode: string; label: string; description: string; iconKey: string; state: 'ready' | 'provisioning' | 'disabled'; launchUrl?: string};
-export type Navigation = {context: string; apps: AppTile[]; currentApp: string; expiry: string | null};
+export type Navigation = {context: string; apps: AppTile[]; currentApp: string; expiry: string | null; accountSwitchUrl?: string | null};
 
 export type ShellErrorKind = 'invalid' | 'denied' | 'pending' | 'unavailable' | 'conflict' | 'unknown';
 

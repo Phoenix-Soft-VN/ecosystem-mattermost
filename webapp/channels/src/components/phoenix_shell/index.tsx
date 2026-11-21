@@ -7,6 +7,7 @@ import {UserTypes} from 'mattermost-redux/action_types';
 import store from 'stores/redux_store';
 import InitialLoadingScreen from 'components/initial_loading_screen';
 
+import {setAccountSwitchUrl} from './account_switch';
 import AppLauncher from './app_launcher';
 import type {AppTile, ColorMode, Navigation, ShellSnapshot} from './client';
 import {ERROR_COPY, ShellError, fetchNavigation, fetchShellContext, patchPreference} from './client';
@@ -318,6 +319,14 @@ export default function PhoenixShell({children}: Props) {
             release();
         };
     }, [load]);
+
+    // Publish the Gateway's accountSwitchUrl for the native user menu; any
+    // non-ready phase (error, loading, signed out) hides the entry.
+    const switchUrl = phase.name === 'ready' ? phase.nav?.accountSwitchUrl ?? null : null;
+    useEffect(() => {
+        setAccountSwitchUrl(switchUrl);
+        return () => setAccountSwitchUrl(null);
+    }, [switchUrl]);
 
     useEffect(() => {
         const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
