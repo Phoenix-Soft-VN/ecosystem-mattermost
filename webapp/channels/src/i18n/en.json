@@ -33659,6 +33659,10 @@
     "defaultMessage": "Set custom status text",
     "description": "Menu item label in the user account menu prompting the user to set a custom status; also read by screen readers."
   },
+  "userAccountMenu.addAccountMenuItem.label": {
+    "defaultMessage": "Add account",
+    "description": "Menu item that opens the Phoenix confirmation page to add another account in the same workspace."
+  },
   "userAccountMenu.switchAccountMenuItem.label": {
     "defaultMessage": "Switch account",
     "description": "Menu item in the user account menu that opens the Phoenix account chooser to switch to another saved account in the same workspace."

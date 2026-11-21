@@ -60,3 +60,10 @@ test('shell publishes accountSwitchUrl from the navigation response to the user 
     await screen.findByTestId('phoenix-header');
     expect(screen.getByTestId('switch-href').textContent).toBe('none');
 });
+
+test('add account uses the confirmation page and rejects disabled or noncanonical URLs', () => {
+  expect(accountSwitchLink('https://auth.example.test/accounts', 'https://chat.example.test', 'add')).toBe('https://auth.example.test/accounts/add-start?return_to=https%3A%2F%2Fchat.example.test%2F');
+  for (const bad of [null, undefined, '', 'javascript:alert(1)', '/accounts', 'https://user:pass@auth.example.test/accounts', 'https://auth.example.test/accounts?next=evil', 'https://auth.example.test/accounts#x', 'https://auth.example.test/other']) {
+    expect(accountSwitchLink(bad, 'https://chat.example.test', 'add')).toBe(null);
+  }
+});

@@ -8325,6 +8325,7 @@
   "userAccountMenu.setCustomStatusMenuItem.hasStatusWithTextAndNoExpiry.ariaDescription": "Trạng thái là \"{text}\". Đặt trạng thái tùy chỉnh.",
   "userAccountMenu.setCustomStatusMenuItem.noStatusSet": "Đặt trạng thái tùy chỉnh",
   "userAccountMenu.setCustomStatusMenuItem.noStatusTextSet": "Đặt nội dung trạng thái tùy chỉnh",
+  "userAccountMenu.addAccountMenuItem.label": "Thêm tài khoản",
   "userAccountMenu.switchAccountMenuItem.label": "Chuyển tài khoản",
   "userGuideHelp.askTheCommunity": "Hỏi cộng đồng",
   "userGuideHelp.keyboardShortcuts": "Các phím tắt",
