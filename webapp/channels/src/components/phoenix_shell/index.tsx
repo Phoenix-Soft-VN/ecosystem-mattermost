@@ -323,10 +323,11 @@ export default function PhoenixShell({children}: Props) {
     // Publish the Gateway's accountSwitchUrl for the native user menu; any
     // non-ready phase (error, loading, signed out) hides the entry.
     const switchUrl = phase.name === 'ready' ? phase.nav?.accountSwitchUrl ?? null : null;
+    const switchTenant = phase.name === 'ready' ? phase.nav?.tenant?.slug ?? null : null;
     useEffect(() => {
-        setAccountSwitchUrl(switchUrl);
+        setAccountSwitchUrl(switchUrl, switchTenant);
         return () => setAccountSwitchUrl(null);
-    }, [switchUrl]);
+    }, [switchUrl, switchTenant]);
 
     useEffect(() => {
         const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
