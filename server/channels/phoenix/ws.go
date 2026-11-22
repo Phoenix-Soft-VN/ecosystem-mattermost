@@ -18,6 +18,7 @@ type EventInfo struct {
 	TeamID       string
 	TargetUserID string   // event addressed to one user
 	Subjects     []string // user ids the payload talks about
+	PostID       string   // persisted post referenced by a post lifecycle event
 }
 
 // unscopedAllowed lists the events without channel/team/user scope and without a user subject
@@ -128,13 +129,41 @@ func (p *Policy) AllowEvent(ctx context.Context, sessionID, userID string, ev Ev
 			continue
 		}
 		if t, e := p.UserTenant(ctx, s); !same(t, e) {
-			return false
+			// Playbooks has one plugin-owned bot shared by all tenants. Its post author
+			// is not a tenant principal; the persisted channel post supplies the scope.
+			// Never extend this exception to a bound foreign user or other subjects.
+			if e != nil || t != "" || !p.allowPlaybooksPostAuthor(ctx, s, ev) {
+				return false
+			}
 		}
 	}
 	if !scoped && len(ev.Subjects) == 0 && !unscopedAllowed[ev.Type] {
 		return false
 	}
 	return true
+}
+
+func (p *Policy) allowPlaybooksPostAuthor(ctx context.Context, userID string, ev EventInfo) bool {
+	if ev.ChannelID == "" || ev.PostID == "" {
+		return false
+	}
+	switch ev.Type {
+	case "posted", "post_edited", "post_deleted":
+	default:
+		return false
+	}
+	// Check every time, including write/replay: disabling/deleting the bot must
+	// invalidate queued events. A username or a client-supplied bot marker is not proof.
+	var allowed bool
+	err := p.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM posts p
+		JOIN bots b ON b.userid = p.userid
+		JOIN users u ON u.id = b.userid
+		WHERE p.id=$1 AND p.channelid=$2 AND p.userid=$3
+		AND b.ownerid='playbooks' AND b.deleteat=0 AND u.deleteat=0
+		AND NOT EXISTS (SELECT 1 FROM phoenix_user_bindings ub WHERE ub.native_user_id=b.userid)
+	)`, ev.PostID, ev.ChannelID, userID).Scan(&allowed)
+	return err == nil && allowed
 }
 
 // StatusLimiter enforces the WS status action budget (30/min/session).
