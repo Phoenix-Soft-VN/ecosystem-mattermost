@@ -204,8 +204,9 @@
         align-items: center;
     }
 
-    // Icon-only 44px target for launcher, theme, and compact utilities triggers.
+    // Icon-only 44px target for bell, launcher, theme, and compact utilities triggers.
     &__icon-button {
+        position: relative;
         display: inline-flex;
         width: 44px;
         height: 44px;
@@ -223,6 +224,27 @@
         font: inherit;
         font-size: 20px;
         line-height: 1;
+    }
+
+    &__unread-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        display: inline-flex;
+        min-width: 18px;
+        height: 18px;
+        box-sizing: border-box;
+        align-items: center;
+        justify-content: center;
+        padding: 0 5px;
+        border-radius: 999px;
+        background: var(--ph-color-danger, var(--phoenix-color-danger, #c0392b));
+        color: var(--ph-color-danger-foreground, var(--phoenix-color-dangerForeground, #fff));
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        line-height: 1;
+        pointer-events: none;
     }
 
     &__popover {

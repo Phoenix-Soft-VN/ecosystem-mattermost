@@ -2,15 +2,20 @@
 
 import React, {useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState} from 'react';
 import {IntlContext, IntlProvider} from 'react-intl';
+import {ReactReduxContext, useDispatch} from 'react-redux';
+import {__RouterContext as RouterContext} from 'react-router';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 import {UserTypes} from 'mattermost-redux/action_types';
+import {showMentions} from 'actions/views/rhs';
 import store from 'stores/redux_store';
 import InitialLoadingScreen from 'components/initial_loading_screen';
+import {TopLevelProducts} from 'utils/constants';
+import * as productUtils from 'utils/products';
 
 import {setAccountSwitchUrl} from './account_switch';
 import AppLauncher from './app_launcher';
-import type {AppTile, ColorMode, Navigation, ShellSnapshot} from './client';
-import {ERROR_COPY, ShellError, fetchNavigation, fetchShellContext, patchPreference} from './client';
+import type {AppTile, ColorMode, Navigation, ShellSnapshot, UnreadCountResponse} from './client';
+import {ERROR_COPY, ShellError, fetchNavigation, fetchShellContext, fetchUnreadCount, patchPreference} from './client';
 import {HeaderSlotsProvider, HeaderSlotTarget, useCompactChannelTools, useHasSlotContent} from './header_slots';
 import {registerPhoenixSessionLifecycle, NATIVE_SESSION_CLEARED} from './session_lifecycle';
 import type {ResolvedMode} from './theme';
@@ -71,6 +76,107 @@ function safeHttps(url: string | undefined): string | undefined {
 function initials(value: string | undefined): string {
     const words = (value || 'Phoenix').trim().split(/\s+/).filter(Boolean);
     return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'P';
+}
+
+function BellIcon() {
+    return (
+        <svg
+            viewBox='0 0 24 24'
+            width='1em'
+            height='1em'
+            aria-hidden='true'
+            focusable='false'
+            fill='none'
+            stroke='currentColor'
+            strokeWidth='2'
+            strokeLinecap='round'
+            strokeLinejoin='round'
+        >
+            <path d='M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9'/>
+            <path d='M13.73 21a2 2 0 0 1-3.46 0'/>
+        </svg>
+    );
+}
+
+export function formatUnreadBadge(count: number | null | undefined, status?: 'ready' | 'unavailable'): string | null {
+    if (status === 'unavailable' || count == null || !Number.isFinite(count) || count <= 0) {
+        return null;
+    }
+    const whole = Math.floor(count);
+    return whole > 99 ? '99+' : String(whole);
+}
+
+type UnreadBellProps = {
+    unread: UnreadCountResponse | null;
+    openPopover: PopoverId | null;
+    onOpenMentions: () => void;
+};
+
+function PhoenixUnreadBell({unread, openPopover, onOpenMentions}: UnreadBellProps) {
+    const badgeText = formatUnreadBadge(unread?.count, unread?.status);
+    const badgeCount = badgeText && unread?.count != null ? Math.floor(unread.count) : 0;
+    return (
+        <WithTooltip
+            title='Thông báo'
+            disabled={openPopover !== null}
+        >
+            <button
+                className='phoenix-shell__icon-button phoenix-shell__unread-bell'
+                type='button'
+                aria-label='Thông báo'
+                data-testid='phoenix-unread-bell'
+                onClick={onOpenMentions}
+            >
+                <BellIcon/>
+                {badgeText && (
+                    <span
+                        className='phoenix-shell__unread-badge'
+                        data-testid='phoenix-unread-badge'
+                        aria-label={`${badgeCount} chưa đọc`}
+                    >{badgeText}</span>
+                )}
+            </button>
+        </WithTooltip>
+    );
+}
+
+function ConnectedPhoenixUnreadBell({unread, openPopover}: {unread: UnreadCountResponse | null; openPopover: PopoverId | null}) {
+    const productId = productUtils.useCurrentProductId();
+    const dispatch = useDispatch();
+    if (productId !== null && productId !== TopLevelProducts.CHANNELS) {
+        return null;
+    }
+    return (
+        <PhoenixUnreadBell
+            unread={unread}
+            openPopover={openPopover}
+            onOpenMentions={() => {
+                dispatch(showMentions());
+            }}
+        />
+    );
+}
+
+function ProductAwareUnreadBell({unread, openPopover}: {unread: UnreadCountResponse | null; openPopover: PopoverId | null}) {
+    const reduxCtx = useContext(ReactReduxContext);
+    const routerCtx = useContext(RouterContext);
+    if (reduxCtx && routerCtx) {
+        return (
+            <ConnectedPhoenixUnreadBell
+                unread={unread}
+                openPopover={openPopover}
+            />
+        );
+    }
+    return (
+        <PhoenixUnreadBell
+            unread={unread}
+            openPopover={openPopover}
+            onOpenMentions={() => {
+                store.dispatch(showMentions());
+            }}
+        />
+    );
 }
 
 function LauncherIcon() {
@@ -226,6 +332,7 @@ type Props = {children: React.ReactNode};
 
 export default function PhoenixShell({children}: Props) {
     const [phase, setPhase] = useState<Phase>({name: 'loading'});
+    const [unread, setUnread] = useState<UnreadCountResponse | null>(null);
     const [prefersDark, setPrefersDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
     const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1440));
     const [openPopover, setOpenPopover] = useState<PopoverId | null>(null);
@@ -344,6 +451,44 @@ export default function PhoenixShell({children}: Props) {
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
     }, []);
+
+    // Fetch authoritative unread count from /phoenix/unread-count when ready, on focus, and every 45s.
+    useEffect(() => {
+        if (phase.name !== 'ready') {
+            setUnread(null);
+            return undefined;
+        }
+        let cancelled = false;
+        const refreshUnread = async () => {
+            try {
+                const res = await fetchUnreadCount();
+                if (!cancelled && res.body) {
+                    setUnread(res.body);
+                }
+            } catch {
+                if (!cancelled) {
+                    setUnread({count: null, status: 'unavailable'});
+                }
+            }
+        };
+        void refreshUnread();
+        const timer = window.setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                void refreshUnread();
+            }
+        }, 45_000);
+        const onVis = () => {
+            if (document.visibilityState === 'visible') {
+                void refreshUnread();
+            }
+        };
+        document.addEventListener('visibilitychange', onVis);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVis);
+        };
+    }, [phase.name]);
 
     const mode: ColorMode | null = phase.name === 'ready' ? phase.snapshot.preference.mode : null;
     useEffect(() => {
@@ -593,6 +738,7 @@ export default function PhoenixShell({children}: Props) {
                         apps={apps}
                         currentApp={nav?.currentApp || 'chat'}
                         snapshot={snapshot}
+                        unread={unread}
                         resolved={resolved}
                         themeTriggerLabel={themeTriggerLabel}
                         viewportWidth={viewportWidth}
@@ -639,6 +785,7 @@ type HeaderBarProps = {
     apps: AppTile[];
     currentApp: string;
     snapshot: ShellSnapshot;
+    unread: UnreadCountResponse | null;
     resolved: ResolvedMode;
     themeTriggerLabel: string;
     viewportWidth: number;
@@ -662,6 +809,7 @@ function PhoenixHeaderBar({
     apps,
     currentApp,
     snapshot,
+    unread,
     resolved,
     themeTriggerLabel,
     viewportWidth,
@@ -684,6 +832,7 @@ function PhoenixHeaderBar({
     const hasUtilities = useHasSlotContent('utilities');
     const effectiveCompactUtilities = isCompactUtilities || overflowUtilities;
     const showOverflowUtilities = effectiveCompactUtilities && hasUtilities;
+    const bellInUtilitiesOverflow = showOverflowUtilities && viewportWidth <= 640;
 
     const checkOverflow = useCallback(() => {
         const el = headerRef.current;
@@ -800,10 +949,22 @@ function PhoenixHeaderBar({
                                 data-phoenix-popover='utilities'
                                 tabIndex={-1}
                             >
+                                {bellInUtilitiesOverflow && (
+                                    <ProductAwareUnreadBell
+                                        unread={unread}
+                                        openPopover={openPopover}
+                                    />
+                                )}
                                 <HeaderSlotTarget name='utilities'/>
                             </div>
                         )}
                     </div>
+                )}
+                {!bellInUtilitiesOverflow && (
+                    <ProductAwareUnreadBell
+                        unread={unread}
+                        openPopover={openPopover}
+                    />
                 )}
                 <div
                     key='apps'

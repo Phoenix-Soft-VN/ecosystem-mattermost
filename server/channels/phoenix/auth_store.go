@@ -244,3 +244,54 @@ func (s *Store) SessionIDsOfUser(ctx context.Context, nativeUserID string) ([]st
 	}
 	return ids, rows.Err()
 }
+
+// LiveSessionBindingsOfUser returns non-expired, non-operator session bindings of one native user.
+func (s *Store) LiveSessionBindingsOfUser(ctx context.Context, nativeUserID string) ([]SessionBinding, error) {
+	now := s.nowMS()
+	rows, err := s.db.QueryContext(ctx, `SELECT b.session_id, b.issuer, b.sub, b.sid, b.tenant_id, b.native_user_id, b.access_version, b.expires_at
+		FROM phoenix_session_bindings b
+		WHERE b.native_user_id=$1
+		  AND (b.expires_at = 0 OR b.expires_at > $2)
+		  AND (COALESCE(b.idle_expires_at, 0) = 0 OR b.idle_expires_at > $2)
+		  AND (COALESCE(b.absolute_expires_at, 0) = 0 OR b.absolute_expires_at > $2)
+		  AND NOT EXISTS (SELECT 1 FROM phoenix_operator_accounts oa WHERE oa.native_user_id = b.native_user_id AND oa.enabled)
+		ORDER BY b.session_id`, nativeUserID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionBinding
+	for rows.Next() {
+		var b SessionBinding
+		if err := rows.Scan(&b.SessionID, &b.Issuer, &b.Sub, &b.SID, &b.TenantID, &b.NativeUserID, &b.AccessVersion, &b.ExpiresAtMS); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// LiveSessionBindings returns all non-expired, non-operator session bindings for bounded periodic refresh.
+func (s *Store) LiveSessionBindings(ctx context.Context) ([]SessionBinding, error) {
+	now := s.nowMS()
+	rows, err := s.db.QueryContext(ctx, `SELECT b.session_id, b.issuer, b.sub, b.sid, b.tenant_id, b.native_user_id, b.access_version, b.expires_at
+		FROM phoenix_session_bindings b
+		WHERE (b.expires_at = 0 OR b.expires_at > $1)
+		  AND (COALESCE(b.idle_expires_at, 0) = 0 OR b.idle_expires_at > $1)
+		  AND (COALESCE(b.absolute_expires_at, 0) = 0 OR b.absolute_expires_at > $1)
+		  AND NOT EXISTS (SELECT 1 FROM phoenix_operator_accounts oa WHERE oa.native_user_id = b.native_user_id AND oa.enabled)
+		ORDER BY b.native_user_id, b.session_id`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionBinding
+	for rows.Next() {
+		var b SessionBinding
+		if err := rows.Scan(&b.SessionID, &b.Issuer, &b.Sub, &b.SID, &b.TenantID, &b.NativeUserID, &b.AccessVersion, &b.ExpiresAtMS); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}

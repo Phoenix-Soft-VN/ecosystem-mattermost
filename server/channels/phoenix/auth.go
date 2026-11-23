@@ -53,9 +53,10 @@ type AuthService struct {
 	Sessions  SessionOps
 	Authority *Authority
 	Policy    *Policy
-	Limiter   *Limiter
-	Now       func() time.Time
-	Audit     func(event string, fields map[string]string)
+	Limiter      *Limiter
+	Now          func() time.Time
+	Audit        func(event string, fields map[string]string)
+	UnreadPusher *UnreadPusher
 }
 
 func (s *AuthService) now() time.Time {
@@ -391,6 +392,10 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Policy != nil {
 		s.Policy.InvalidateSession(sessionID)
+	}
+	if s.UnreadPusher != nil {
+		s.UnreadPusher.UnstopSID(claims.SID)
+		s.UnreadPusher.NotifyUser(ub.NativeUserID)
 	}
 	dest := "/" + teamName
 	if strings.HasPrefix(txn.ReturnPath, "/"+teamName+"/") {

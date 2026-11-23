@@ -27,6 +27,7 @@ import (
 	"github.com/mattermost/mattermost/server/v8/channels/app/imaging"
 	"github.com/mattermost/mattermost/server/v8/channels/app/password/hashers"
 	"github.com/mattermost/mattermost/server/v8/channels/app/users"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 	"github.com/mattermost/mattermost/server/v8/einterfaces"
 	"github.com/mattermost/mattermost/server/v8/platform/shared/mfa"
@@ -3298,6 +3299,7 @@ func (a *App) UpdateThreadReadForUser(rctx request.CTX, currentSessionId, userID
 	if thread.UnreadReplies == 0 && a.IsCRTEnabledForUser(rctx, userID) {
 		a.clearPushNotification(currentSessionId, userID, post.ChannelId, threadID)
 	}
+	phoenix.NotifyUnreadActivity(userID, currentSessionId)
 
 	message := model.NewWebSocketEvent(model.WebsocketEventThreadReadChanged, teamID, "", userID, nil, "")
 	message.Add("thread_id", threadID)

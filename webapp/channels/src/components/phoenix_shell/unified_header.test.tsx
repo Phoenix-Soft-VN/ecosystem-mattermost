@@ -9,6 +9,7 @@ import type {ChannelType} from '@mattermost/types/channels';
 import {Permissions} from 'mattermost-redux/constants';
 
 import * as GlobalActions from 'actions/global_actions';
+import * as RhsActions from 'actions/views/rhs';
 import ChannelHeader from 'components/channel_header/channel_header';
 import GlobalHeader from 'components/global_header/global_header';
 import MobileChannelHeader from 'components/mobile_channel_header/mobile_channel_header';
@@ -29,6 +30,7 @@ jest.mock('components/phoenix_shell/client', () => ({
     fetchShellContext: jest.fn(),
     fetchNavigation: jest.fn(),
     patchPreference: jest.fn(),
+    fetchUnreadCount: jest.fn(),
 }));
 jest.mock('utils/utils', () => ({
     ...jest.requireActual('utils/utils'),
@@ -42,6 +44,7 @@ jest.mock('actions/global_actions', () => ({
 const shell = client.fetchShellContext as jest.MockedFunction<typeof client.fetchShellContext>;
 const navigation = client.fetchNavigation as jest.MockedFunction<typeof client.fetchNavigation>;
 const preference = client.patchPreference as jest.MockedFunction<typeof client.patchPreference>;
+const unreadCount = client.fetchUnreadCount as jest.MockedFunction<typeof client.fetchUnreadCount>;
 
 const snapshot: ShellSnapshot = {
     appCode: 'chat',
@@ -273,6 +276,12 @@ beforeEach(() => {
         logoutUrl: null,
         status: 200,
     });
+    unreadCount.mockResolvedValue({
+        body: {count: 0, status: 'ready'},
+        etag: null,
+        logoutUrl: null,
+        status: 200,
+    });
     Object.defineProperty(window, 'matchMedia', {
         writable: true,
         value: jest.fn(() => ({matches: false, addEventListener: jest.fn(), removeEventListener: jest.fn()})),
@@ -500,6 +509,7 @@ describe('Unified Chat Header (Phase 1)', () => {
         expect(within(productHeader).getByTestId('product-centre')).toBeInTheDocument();
         expect(within(productHeader).getByTestId('product-right')).toBeInTheDocument();
         expect(within(productHeader).queryByRole('button', {name: 'Recent mentions'})).toBeNull();
+        expect(within(productHeader).queryByRole('button', {name: 'Thông báo'})).toBeNull();
 
         productSpy.mockRestore();
         popoutSpy.mockRestore();
@@ -675,5 +685,84 @@ describe('Unified Chat Header (Phase 1)', () => {
         await screen.findByTestId('phoenix-header');
         const popoutHost = popoutView.getByTestId('popout-host');
         expect(within(popoutHost).getByRole('banner', {name: 'channel header region'})).toBeInTheDocument();
+    });
+
+    // Break (C01 + C07): hiding/misplacing the bell, formatting 0/null/unavailable/7/100/9999 wrong,
+    // not dispatching showMentions() on click, or showing the bell on boards_prod.
+    test('C01_C07 Phoenix bell badge formatting, position before launcher, showMentions click, and hidden on boards_prod', async () => {
+        const user = userEvent.setup();
+        const showMentionsSpy = jest.spyOn(RhsActions, 'showMentions').mockReturnValue({type: 'MOCK_SHOW_MENTIONS'} as any);
+
+        // 1. 0, null, unavailable -> badge hidden.
+        for (const payload of [
+            {count: 0, status: 'ready' as const},
+            {count: null, status: 'ready' as const},
+            {count: 5, status: 'unavailable' as const},
+        ]) {
+            unreadCount.mockResolvedValueOnce({body: payload, etag: null, logoutUrl: null, status: 200});
+            const view = renderWithContext(
+                <PhoenixShell>
+                    <GlobalHeader/>
+                </PhoenixShell>,
+                makeBaseState(),
+            );
+            const header = await screen.findByTestId('phoenix-header');
+            await waitFor(() => expect(unreadCount).toHaveBeenCalled());
+            expect(within(header).getByRole('button', {name: 'Thông báo'})).toBeInTheDocument();
+            expect(within(header).queryByTestId('phoenix-unread-badge')).toBeNull();
+            view.unmount();
+        }
+
+        // 2. count=7 -> "7", aria-label="7 chưa đọc", bell appears before "Ứng dụng", click calls showMentions().
+        unreadCount.mockResolvedValueOnce({body: {count: 7, status: 'ready'}, etag: null, logoutUrl: null, status: 200});
+        const view7 = renderWithContext(
+            <PhoenixShell>
+                <GlobalHeader/>
+            </PhoenixShell>,
+            makeBaseState(),
+        );
+        const header7 = await screen.findByTestId('phoenix-header');
+        const badge7 = await within(header7).findByTestId('phoenix-unread-badge');
+        expect(badge7).toHaveTextContent('7');
+        expect(badge7).toHaveAttribute('aria-label', '7 chưa đọc');
+
+        const bellBtn = within(header7).getByRole('button', {name: 'Thông báo'});
+        const appsBtn = within(header7).getByRole('button', {name: 'Ứng dụng'});
+        expect(Boolean(bellBtn.compareDocumentPosition(appsBtn) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+
+        await user.click(bellBtn);
+        expect(showMentionsSpy).toHaveBeenCalledTimes(1);
+        view7.unmount();
+
+        // 3. 100 and 9999 -> "99+" with exact aria-label.
+        for (const n of [100, 9999]) {
+            unreadCount.mockResolvedValueOnce({body: {count: n, status: 'ready'}, etag: null, logoutUrl: null, status: 200});
+            const viewHigh = renderWithContext(
+                <PhoenixShell>
+                    <GlobalHeader/>
+                </PhoenixShell>,
+                makeBaseState(),
+            );
+            const headerHigh = await screen.findByTestId('phoenix-header');
+            const badgeHigh = await within(headerHigh).findByTestId('phoenix-unread-badge');
+            expect(badgeHigh).toHaveTextContent('99+');
+            expect(badgeHigh).toHaveAttribute('aria-label', `${n} chưa đọc`);
+            viewHigh.unmount();
+        }
+
+        // 4. Hidden on boards_prod.
+        const productSpy = jest.spyOn(productUtils, 'useCurrentProductId').mockReturnValue('boards_prod');
+        unreadCount.mockResolvedValueOnce({body: {count: 7, status: 'ready'}, etag: null, logoutUrl: null, status: 200});
+        renderWithContext(
+            <PhoenixShell>
+                <GlobalHeader/>
+            </PhoenixShell>,
+            makeBaseState(),
+        );
+        const boardsHeader = await screen.findByTestId('phoenix-header');
+        expect(within(boardsHeader).queryByRole('button', {name: 'Thông báo'})).toBeNull();
+
+        productSpy.mockRestore();
+        showMentionsSpy.mockRestore();
     });
 });

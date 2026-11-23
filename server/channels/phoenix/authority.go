@@ -29,6 +29,7 @@ const (
 	AudienceShellContext   = "gateway:internal:ui-shell-context"
 	AudienceShellNav       = "gateway:internal:ui-shell-navigation"
 	AudienceUIPreferences  = "gateway:internal:ui-preferences"
+	AudienceUnread         = "gateway:internal:ui-unread"
 	ScopeChatAccessContext = "chat:access-context"
 	BridgeAppCode          = "chat"
 	assertionTTL           = 45 * time.Second

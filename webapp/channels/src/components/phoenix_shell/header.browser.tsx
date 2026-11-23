@@ -150,6 +150,9 @@ window.fetch = async (input, init) => {
         const apps = scenario.apps.map((a) => ({description: '', iconKey: a.appCode, ...a}));
         return reply({context: 'tenant', currentApp: 'chat', expiry: null, apps}, {ETag: '"nav-1"'});
     }
+    if (url === '/phoenix/unread-count') {
+        return reply({count: 3, status: 'ready'});
+    }
     if (url === '/phoenix/ui-preferences' && init?.method === 'PATCH') {
         mode = JSON.parse(String(init.body)).mode;
         version += 1;

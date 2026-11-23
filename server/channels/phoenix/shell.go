@@ -44,15 +44,17 @@ type cachedShellEntry struct {
 // bound to one operation audience. Upstream 401/403/409 are preserved, 1x ASSERTION_INVALID is
 // retried and repeated ASSERTION_INVALID maps to 502 Bad Gateway.
 type ShellService struct {
-	Policy     *Policy
-	Sessions   SessionLookup
-	Signer     *BridgeSigner
-	GatewayURL string
-	SiteOrigin string
-	LogoutURL  string
-	HTTP       *http.Client
-	Now        func() time.Time
-	Audit      func(event string, fields map[string]string)
+	Policy        *Policy
+	Sessions      SessionLookup
+	Signer        *BridgeSigner
+	GatewayURL    string
+	SiteOrigin    string
+	LogoutURL     string
+	HTTP          *http.Client
+	Now           func() time.Time
+	Audit         func(event string, fields map[string]string)
+	UnreadCounter UnreadCounter
+	UnreadPusher  *UnreadPusher
 
 	mu    sync.RWMutex
 	cache map[string]cachedShellEntry
@@ -159,15 +161,15 @@ func (s *ShellService) writeShellResponse(w http.ResponseWriter, status int, con
 	_, _ = w.Write(data)
 }
 
-func (s *ShellService) doBridge(ctx context.Context, path, audience string, actor ActorContext, extra map[string]any, header http.Header) (*http.Response, []byte, error) {
-	payload := map[string]any{"appCode": BridgeAppCode, "assertion": s.Signer.Sign(audience, "", actor.Sub, actor.TenantID, actor.SID)}
+func postBridge(ctx context.Context, httpClient *http.Client, gatewayURL, path string, signer *BridgeSigner, audience, sub, tenantID, sid string, extra map[string]any, header http.Header, timeout time.Duration) (*http.Response, []byte, error) {
+	payload := map[string]any{"appCode": BridgeAppCode, "assertion": signer.Sign(audience, "", sub, tenantID, sid)}
 	for k, v := range extra {
 		payload[k] = v
 	}
 	body, _ := json.Marshal(payload)
-	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, s.GatewayURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, gatewayURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -177,13 +179,17 @@ func (s *ShellService) doBridge(ctx context.Context, path, audience string, acto
 			req.Header.Add(k, v)
 		}
 	}
-	resp, err := s.HTTP.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp, data, nil
+}
+
+func (s *ShellService) doBridge(ctx context.Context, path, audience string, actor ActorContext, extra map[string]any, header http.Header) (*http.Response, []byte, error) {
+	return postBridge(ctx, s.HTTP, s.GatewayURL, path, s.Signer, audience, actor.Sub, actor.TenantID, actor.SID, extra, header, 8*time.Second)
 }
 
 // proxy posts {appCode, assertion, ...extra} to a Gateway bridge route and relays status and body.
@@ -325,9 +331,33 @@ func (s *ShellService) UIPreferences(w http.ResponseWriter, r *http.Request) {
 	s.proxy(w, r, "/internal/ui/preferences", AudienceUIPreferences, actor, map[string]any{"preference": pref}, h, "")
 }
 
+// UnreadCount handles GET /phoenix/unread-count using the exact same authoritative counter
+// as UnreadPusher so the bell badge and the Gateway-pushed count always agree.
+func (s *ShellService) UnreadCount(w http.ResponseWriter, r *http.Request) {
+	actor, _, ok := s.actor(w, r)
+	if !ok {
+		return
+	}
+	if s.UnreadPusher != nil {
+		s.UnreadPusher.UnstopSID(actor.SID)
+	}
+	if s.UnreadCounter == nil {
+		s.writeShellResponse(w, http.StatusOK, "application/json; charset=utf-8", "", []byte(`{"count":0,"status":"unavailable"}`))
+		return
+	}
+	n, err := s.UnreadCounter.UnreadBadgeCount(r.Context(), actor.UserID)
+	if err != nil {
+		s.writeShellResponse(w, http.StatusOK, "application/json; charset=utf-8", "", []byte(`{"count":0,"status":"unavailable"}`))
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"count": clampUnreadCount(n), "status": "ready"})
+	s.writeShellResponse(w, http.StatusOK, "application/json; charset=utf-8", "", body)
+}
+
 // Register mounts the shell routes.
 func (s *ShellService) Register(handle func(path string, h http.Handler, methods ...string)) {
 	handle("/phoenix/shell-context", http.HandlerFunc(s.ShellContext), http.MethodGet)
 	handle("/phoenix/shell-navigation", http.HandlerFunc(s.ShellNavigation), http.MethodGet)
 	handle("/phoenix/ui-preferences", http.HandlerFunc(s.UIPreferences), http.MethodPatch)
+	handle("/phoenix/unread-count", http.HandlerFunc(s.UnreadCount), http.MethodGet)
 }

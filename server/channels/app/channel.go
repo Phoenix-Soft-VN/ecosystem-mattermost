@@ -20,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/mattermost/mattermost/server/public/shared/mlog"
 	"github.com/mattermost/mattermost/server/public/shared/request"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 	"github.com/mattermost/mattermost/server/v8/channels/store/sqlstore"
 )
@@ -3436,6 +3437,7 @@ func (a *App) markChannelAsUnreadFromPostCRTUnsupported(rctx request.CTX, postID
 	}
 	a.sendWebSocketPostUnreadEvent(rctx, channelUnread, postID)
 	a.UpdateMobileAppBadge(userID)
+	phoenix.NotifyUnreadActivity(userID, rctx.Session().Id)
 	return channelUnread, nil
 }
 
@@ -3674,6 +3676,7 @@ func (a *App) MarkTeamChannelsAndThreadsViewed(rctx request.CTX, teamID string, 
 	for _, channelID := range channelsToClearPushNotifications {
 		a.clearPushNotification(currentSessionID, userID, channelID, "")
 	}
+	phoenix.NotifyUnreadActivity(userID, currentSessionID)
 
 	if isCRTEnabled {
 		// Threads can have been marked read across the entire team, so broadcast a
@@ -3796,6 +3799,7 @@ func (a *App) MarkChannelsAsViewed(rctx request.CTX, channelIDs []string, userID
 	for _, channelID := range channelsToClearPushNotifications {
 		a.clearPushNotification(currentSessionID, userID, channelID, "")
 	}
+	phoenix.NotifyUnreadActivity(userID, currentSessionID)
 
 	if updateThreads && isCRTEnabled {
 		timestamp := model.GetMillis()

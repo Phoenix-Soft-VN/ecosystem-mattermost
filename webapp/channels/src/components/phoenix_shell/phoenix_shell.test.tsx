@@ -9,7 +9,7 @@ import {NATIVE_SESSION_CLEARED} from './session_lifecycle';
 import NativeClient from '../../../../platform/client/src/client4';
 
 jest.mock('components/initial_loading_screen', () => ({__esModule: true, default: {stop: jest.fn()}}));
-jest.mock('./client', () => ({...jest.requireActual('./client'), fetchShellContext: jest.fn(), fetchNavigation: jest.fn(), patchPreference: jest.fn()}));
+jest.mock('./client', () => ({...jest.requireActual('./client'), fetchShellContext: jest.fn(), fetchNavigation: jest.fn(), patchPreference: jest.fn(), fetchUnreadCount: jest.fn()}));
 jest.mock('utils/utils', () => ({applyTheme: jest.fn()}));
 jest.mock('stores/redux_store', () => ({__esModule: true, default: {dispatch: jest.fn()}}));
 
@@ -27,6 +27,7 @@ const LOGOUT = 'https://auth.phoenixsoft.vn/oauth2/logout';
 const shell = client.fetchShellContext as jest.MockedFunction<typeof client.fetchShellContext>;
 const navigation = client.fetchNavigation as jest.MockedFunction<typeof client.fetchNavigation>;
 const preference = client.patchPreference as jest.MockedFunction<typeof client.patchPreference>;
+const unreadCount = client.fetchUnreadCount as jest.MockedFunction<typeof client.fetchUnreadCount>;
 
 function renderShell() {
     return render(
@@ -70,6 +71,7 @@ test('task request has one browser intent key in its serialized HTTP body', asyn
 beforeEach(() => {
     jest.clearAllMocks();
     shell.mockResolvedValue({body: snapshot, etag: '"7"', logoutUrl: LOGOUT, status: 200});
+    unreadCount.mockResolvedValue({body: {count: 0, status: 'ready'}, etag: null, logoutUrl: null, status: 200});
     mockNavigation([
         {appCode: 'tasks', label: 'Tasks', description: '', iconKey: 'tasks', state: 'ready', launchUrl: 'https://tasks.phoenixsoft.vn'},
         {appCode: 'files', label: 'Files pending', description: '', iconKey: 'files', state: 'provisioning'},
@@ -186,13 +188,13 @@ test('U03 icon theme menu: closed header has launcher and theme icon trigger wit
     const trigger = screen.getByRole('button', {name: 'Giao diện: Sáng'});
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
-    expect(within(header).getAllByRole('button')).toHaveLength(2);
+    expect(within(header).getAllByRole('button')).toHaveLength(3);
     expect(within(header).queryByRole('link')).toBeNull();
     expect(screen.queryByRole('menuitemradio')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('menu')).toBeNull();
     expect(screen.queryByRole('button', {name: 'Tài khoản'})).toBeNull();
-    expect(screen.queryByRole('button', {name: /thông báo|notification|bell/i})).toBeNull();
+    expect(screen.getByRole('button', {name: 'Thông báo'})).toBeInTheDocument();
 
     // Focusing the theme icon trigger exposes its shared WithTooltip content.
     fireEvent.focus(trigger);
@@ -436,7 +438,9 @@ test('U03 keyboard: Tab, Enter/Space, arrows with sequential ETags, resize focus
         renderShell();
         await ready();
 
-        // Launcher dialog: open into search, Tab through safe links, Enter follows one.
+        // Bell sits before launcher; Tab reaches bell first, then launcher dialog.
+        await user.tab();
+        expect(screen.getByRole('button', {name: 'Thông báo'})).toHaveFocus();
         await user.tab();
         expect(appsTrigger()).toHaveFocus();
         await user.keyboard('{Enter}');

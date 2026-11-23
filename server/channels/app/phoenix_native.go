@@ -468,3 +468,14 @@ func (p *PhoenixNative) CreatePost(ctx context.Context, userID, channelID, rootI
 	}
 	return created.Id, nil
 }
+
+// UnreadBadgeCount returns the authoritative mention + DM (+ CRT when enabled) badge count
+// for userID, shared by both UnreadPusher and GET /phoenix/unread-count.
+func (p *PhoenixNative) UnreadBadgeCount(ctx context.Context, userID string) (int, error) {
+	rctx := p.rctx(ctx)
+	count, appErr := p.a.getUserBadgeCount(userID, p.a.IsCRTEnabledForUser(rctx, userID))
+	if appErr != nil {
+		return 0, appErr
+	}
+	return count, nil
+}

@@ -453,6 +453,7 @@ function collector(id, ctx) {
 }
 
 const TRIGGER = {
+    bell: 'button[aria-label="Thông báo"]',
     apps: 'button[aria-label="Ứng dụng"]',
     theme: 'button[aria-label^="Giao diện:"]',
     utilities: 'button[aria-label="Tiện ích"]',
@@ -817,12 +818,14 @@ async function runH01(browser, c) {
             await page.waitForTimeout(1000);
             const mAfter1000ms = await page.evaluate(measureLayout);
             const lateButtons1000ms = mAfter1000ms.headerButtons.filter((b) => /^late-\d+ChannelHeaderButton$/.test(b.id));
-            t.ok('after 1000ms without resize: Tiện ích and all 12 plugins + header controls still hit-test cleanly without overlap',
+            const bellBtn = mAfter1000ms.headerButtons.find((b) => b.id === 'Thông báo');
+            t.ok('after 1000ms without resize: Tiện ích, bell (>=44px), and all 12 plugins + header controls still hit-test cleanly without overlap',
                 Boolean(mAfter1000ms.utilitiesTrigger) &&
+                Boolean(bellBtn && bellBtn.rect.w >= 44 - TOLERANCE && bellBtn.rect.h >= 44 - TOLERANCE) &&
                 lateButtons1000ms.length === 12 &&
                 mAfter1000ms.buttonOverlaps.length === 0 &&
                 mAfter1000ms.headerButtons.every((b) => b.rect.w >= 44 - TOLERANCE && b.rect.h >= 44 - TOLERANCE && b.hit && b.hit.centerOk && b.hit.leftOk && b.hit.rightOk),
-                {utilitiesTrigger: mAfter1000ms.utilitiesTrigger, lateCount: lateButtons1000ms.length, overlaps: mAfter1000ms.buttonOverlaps},
+                {utilitiesTrigger: mAfter1000ms.utilitiesTrigger, bellBtn, lateCount: lateButtons1000ms.length, overlaps: mAfter1000ms.buttonOverlaps},
             );
 
             await page.click(TRIGGER.utilities);

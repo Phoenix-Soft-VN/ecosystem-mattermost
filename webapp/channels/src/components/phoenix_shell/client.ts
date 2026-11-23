@@ -25,6 +25,7 @@ export type ShellSnapshot = {
 
 export type AppTile = {appCode: string; label: string; description: string; iconKey: string; state: 'ready' | 'provisioning' | 'disabled'; launchUrl?: string};
 export type Navigation = {context: string; tenant?: {slug?: string} | null; apps: AppTile[]; currentApp: string; expiry: string | null; accountSwitchUrl?: string | null};
+export type UnreadCountResponse = {count: number | null; status: 'ready' | 'unavailable'};
 
 export type ShellErrorKind = 'invalid' | 'denied' | 'pending' | 'unavailable' | 'conflict' | 'unknown';
 
@@ -109,4 +110,8 @@ export async function patchPreference(pref: {mode?: ColorMode; density?: Density
         headers['If-Match'] = version;
     }
     return call<{mode: ColorMode; density: Density; version?: number}>('/phoenix/ui-preferences', {method: 'PATCH', headers, body: JSON.stringify(pref)});
+}
+
+export async function fetchUnreadCount() {
+    return call<UnreadCountResponse>('/phoenix/unread-count');
 }

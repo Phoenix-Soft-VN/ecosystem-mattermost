@@ -96,7 +96,13 @@ func (api *API) InitPhoenix() {
 			authority.SealFn = authSvc.SealToken
 			authority.OpenFn = authSvc.OpenToken
 			shellSvc = &phoenix.ShellService{Policy: policy, Sessions: native, Signer: signer, GatewayURL: settings.GatewayURL,
-				SiteOrigin: settings.SiteOrigin, LogoutURL: strings.TrimRight(settings.OIDCIssuer, "/") + "/oauth2/logout", HTTP: httpc, Audit: audit}
+				SiteOrigin: settings.SiteOrigin, LogoutURL: strings.TrimRight(settings.OIDCIssuer, "/") + "/oauth2/logout", HTTP: httpc, Audit: audit,
+				UnreadCounter: native}
+			unreadPusher := phoenix.NewUnreadPusher(store, native, signer, settings.GatewayURL, httpc)
+			shellSvc.UnreadPusher = unreadPusher
+			authSvc.UnreadPusher = unreadPusher
+			phoenix.SetDefaultUnreadPusher(unreadPusher)
+			unreadPusher.StartRefresh(context.Background(), 5*time.Minute)
 			logoutSvc = &phoenix.LogoutService{Store: store, Settings: settings, Keys: oidcKeys, Sessions: native, Policy: policy, Authority: authority,
 				Shell: shellSvc, Limiter: phoenix.NewLimiter(phoenix.AuthRatePerMin*4, time.Minute, nil), Audit: audit}
 			if taskFile := os.Getenv("PHOENIX_TASK_SECRET_FILE"); taskFile != "" {

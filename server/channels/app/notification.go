@@ -17,6 +17,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/shared/markdown"
 	"github.com/mattermost/mattermost/server/public/shared/mlog"
 	"github.com/mattermost/mattermost/server/public/shared/request"
+	"github.com/mattermost/mattermost/server/v8/channels/phoenix"
 	"github.com/mattermost/mattermost/server/v8/channels/store"
 )
 
@@ -364,6 +365,10 @@ func (a *App) SendNotifications(rctx request.CTX, post *model.Post, team *model.
 				mlog.String("channel_id", post.ChannelId),
 				mlog.Err(nErr),
 			)
+		} else {
+			for _, uid := range mentionedUsersList {
+				phoenix.NotifyUnread(uid)
+			}
 		}
 
 		rctx.Logger().LogM(mlog.MlvlNotificationTrace, "Finished processing mentions",
