@@ -11,8 +11,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -586,7 +588,8 @@ func TestUnreadRouteAndShellWiring(t *testing.T) {
 	mux := http.NewServeMux()
 	shell.Register(func(path string, h http.Handler, _ ...string) { mux.Handle(path, h) })
 
-	// 1. Authenticated tenant user gets 7 + ready, and sid-1 is un-stopped so push matches 7.
+	// 1. Authenticated tenant user gets 7 + ready; per R5 revised, GET /phoenix/unread-count
+	// must NOT un-stop a stopped sid. Only explicit user activity un-stops it.
 	curSess, curUser, hasSess = "sess-u1", "u1", true
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/phoenix/unread-count", nil))
@@ -600,9 +603,11 @@ func TestUnreadRouteAndShellWiring(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Count != 7 || got.Status != "ready" {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
-	if pusher.isStopped("sid-1") {
-		t.Fatal("GET /phoenix/unread-count must un-stop actor sid")
+	if !pusher.isStopped("sid-1") {
+		t.Fatal("GET /phoenix/unread-count must NOT un-stop actor sid (R5 revised)")
 	}
+	// Explicit user activity un-stops sid-1, and the pushed count matches the bell count (7).
+	pusher.UnstopSID("sid-1")
 	pusher.pushUserNow(context.Background(), "u1", false)
 	if int(pushedCount.Load()) != got.Count {
 		t.Fatalf("bell count (%d) != pushed count (%d)", got.Count, pushedCount.Load())
@@ -639,4 +644,381 @@ type dynamicShellSession struct {
 
 func (d *dynamicShellSession) SessionFromRequest(context.Context, *http.Request) (string, string, string, bool) {
 	return d.fn()
+}
+
+type blockingUnreadCounter struct {
+	mu      sync.Mutex
+	count   int
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (c *blockingUnreadCounter) UnreadBadgeCount(_ context.Context, _ string) (int, error) {
+	n := c.calls.Add(1)
+	if n == 1 {
+		close(c.entered)
+		<-c.release
+	}
+	c.mu.Lock()
+	v := c.count
+	c.mu.Unlock()
+	return v, nil
+}
+
+// Break (I5a): removing the in-flight dirty flag / needTrailing path drops an event
+// arriving while the counter/POST is already running.
+func TestUnreadInFlightDirtyTrailingPush(t *testing.T) {
+	pushed := make(chan int, 4)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		pushed <- int(body["count"].(float64))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gw.Close()
+
+	st := &fakeUnreadStore{bindings: []SessionBinding{
+		{SessionID: "sess-1", Sub: "sub-1", TenantID: "t1", SID: "sid-1", NativeUserID: "u1"},
+	}}
+	cnt := &blockingUnreadCounter{
+		count:   1,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	p := NewUnreadPusher(st, cnt, &BridgeSigner{Issuer: "chat-issuer", Secret: []byte("s")}, gw.URL, gw.Client())
+	defer p.Close()
+	p.Throttle = 40 * time.Millisecond
+
+	p.NotifyUser("u1")
+	<-cnt.entered // Call 1 is now strictly in-flight inside Counter.
+
+	// Event 2 arrives while Call 1 is in flight with a newer count (9).
+	cnt.mu.Lock()
+	cnt.count = 9
+	cnt.mu.Unlock()
+	p.NotifyUser("u1")
+
+	close(cnt.release)
+
+	select {
+	case first := <-pushed:
+		if first != 9 && first != 1 {
+			t.Fatalf("unexpected first pushed count: %d", first)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial push")
+	}
+
+	select {
+	case second := <-pushed:
+		if second != 9 {
+			t.Fatalf("expected trailing push with newer count 9, got %d", second)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("missing trailing push for event that arrived while push was in flight")
+	}
+}
+
+// Break (I5c): removing context.WithTimeout(ctx, p.refreshDeadline()) lets RefreshOnce
+// run past its deadline and push all users.
+func TestUnreadRefreshStopsAtDeadline(t *testing.T) {
+	var completed atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(35 * time.Millisecond):
+			completed.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+			w.WriteHeader(http.StatusRequestTimeout)
+		}
+	}))
+	defer gw.Close()
+
+	bindings := make([]SessionBinding, 0, 6)
+	for i := 0; i < 6; i++ {
+		uid := fmt.Sprintf("u%d", i)
+		bindings = append(bindings, SessionBinding{
+			SessionID: "sess-" + uid, Sub: "sub-" + uid, TenantID: "t1", SID: "sid-" + uid, NativeUserID: uid,
+		})
+	}
+	st := &fakeUnreadStore{bindings: bindings}
+	cnt := &fakeUnreadCounter{count: 1}
+	p := NewUnreadPusher(st, cnt, &BridgeSigner{Issuer: "chat-issuer", Secret: []byte("s")}, gw.URL, gw.Client())
+	p.RefreshWorkers = 1
+	p.RefreshDeadline = 55 * time.Millisecond
+
+	start := time.Now()
+	ok := p.RefreshOnce(context.Background())
+	elapsed := time.Since(start)
+	if !ok {
+		t.Fatal("RefreshOnce should return true")
+	}
+	if completed.Load() >= 6 {
+		t.Fatalf("RefreshOnce ignored deadline: completed all %d users in %v", completed.Load(), elapsed)
+	}
+}
+
+type instrumentedUnreadStore struct {
+	fakeUnreadStore
+	dbLookups       atomic.Int32
+	sessionByIDHits atomic.Int32
+	inFlight        atomic.Int32
+	maxConcurrent   atomic.Int32
+	delay           time.Duration
+}
+
+func (s *instrumentedUnreadStore) LiveSessionBindingsOfUser(ctx context.Context, userID string) ([]SessionBinding, error) {
+	s.dbLookups.Add(1)
+	cur := s.inFlight.Add(1)
+	for {
+		prev := s.maxConcurrent.Load()
+		if cur <= prev || s.maxConcurrent.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
+	defer s.inFlight.Add(-1)
+	return s.fakeUnreadStore.LiveSessionBindingsOfUser(ctx, userID)
+}
+
+func (s *instrumentedUnreadStore) SessionBindingByID(ctx context.Context, sessionID string) (SessionBinding, error) {
+	s.sessionByIDHits.Add(1)
+	return s.fakeUnreadStore.SessionBindingByID(ctx, sessionID)
+}
+
+// Break (I1 / M5): removing pre-spawn gating, bounded worker pool (<=4), negative cache,
+// or empty-stopped UnstopSession skip causes unbounded concurrency or DB bursts on @channel.
+func TestUnreadFanOutBoundedAndNegativeCache(t *testing.T) {
+	var pushes atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pushes.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gw.Close()
+
+	// 10 live users; 990 users with no live binding.
+	bindings := make([]SessionBinding, 0, 10)
+	for i := 0; i < 10; i++ {
+		uid := fmt.Sprintf("live-%d", i)
+		bindings = append(bindings, SessionBinding{
+			SessionID: "sess-" + uid, Sub: "sub-" + uid, TenantID: "t1", SID: "sid-" + uid, NativeUserID: uid,
+		})
+	}
+	st := &instrumentedUnreadStore{
+		fakeUnreadStore: fakeUnreadStore{bindings: bindings},
+		delay:           time.Millisecond,
+	}
+	cnt := &fakeUnreadCounter{count: 2}
+	p := NewUnreadPusher(st, cnt, &BridgeSigner{Issuer: "chat-issuer", Secret: []byte("s")}, gw.URL, gw.Client())
+	defer p.Close()
+	p.NotifyQueueSize = 1024
+
+	// Wave 1: 1000 @channel mentions.
+	for i := 0; i < 10; i++ {
+		p.NotifyUser(fmt.Sprintf("live-%d", i))
+	}
+	for i := 0; i < 990; i++ {
+		p.NotifyUser(fmt.Sprintf("nobind-%d", i))
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for st.dbLookups.Load() < 1000 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if peak := st.maxConcurrent.Load(); peak > 4 {
+		t.Fatalf("notify worker pool exceeded cap of 4: peak=%d", peak)
+	}
+	if got := pushes.Load(); got != 10 {
+		t.Fatalf("expected 10 pushes for live users, got %d", got)
+	}
+
+	// Wave 2: repeat all 1000 users immediately -> negative cache + pre-DB throttle must produce 0 DB lookups.
+	beforeLookups := st.dbLookups.Load()
+	for i := 0; i < 10; i++ {
+		p.NotifyUser(fmt.Sprintf("live-%d", i))
+	}
+	for i := 0; i < 990; i++ {
+		p.NotifyUser(fmt.Sprintf("nobind-%d", i))
+	}
+	time.Sleep(30 * time.Millisecond)
+	if after := st.dbLookups.Load(); after != beforeLookups {
+		t.Fatalf("expected 0 DB lookups in wave 2 (negative cache + pre-DB throttle), got %d", after-beforeLookups)
+	}
+
+	// NotifyUserActivity when stopped set is empty must NOT query SessionBindingByID.
+	p.NotifyUserActivity("live-0", "sess-live-0")
+	time.Sleep(20 * time.Millisecond)
+	if hits := st.sessionByIDHits.Load(); hits != 0 {
+		t.Fatalf("expected 0 SessionBindingByID calls when stopped set is empty, got %d", hits)
+	}
+
+	// RefreshOnce must honour the 30 s throttle and skip just-pushed live users.
+	beforePushes := pushes.Load()
+	p.RefreshOnce(context.Background())
+	if pushes.Load() != beforePushes {
+		t.Fatalf("RefreshOnce must skip keys pushed <30s ago, got %d extra pushes", pushes.Load()-beforePushes)
+	}
+}
+
+// Break (I4): removing TTL sweep on lastPush/userLastPush/noBinding leaks map entries forever.
+func TestUnreadLastPushAndMapTTLPruning(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gw.Close()
+
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	st := &fakeUnreadStore{bindings: []SessionBinding{
+		{SessionID: "s1", Sub: "sub-1", TenantID: "t1", SID: "sid-1", NativeUserID: "u1"},
+		{SessionID: "s2", Sub: "sub-2", TenantID: "t1", SID: "sid-2", NativeUserID: "u2"},
+	}}
+	cnt := &fakeUnreadCounter{count: 3}
+	p := NewUnreadPusher(st, cnt, &BridgeSigner{Issuer: "chat-issuer", Secret: []byte("s")}, gw.URL, gw.Client())
+	defer p.Close()
+	p.Now = func() time.Time { return now }
+
+	p.pushUserNow(context.Background(), "u1", true)
+	p.pushUserNow(context.Background(), "ghost", true) // populates noBinding
+	now = now.Add(20 * time.Second)
+	p.pushUserNow(context.Background(), "u2", true)
+
+	// Advance to t+35s: u1 (>30s) pruned from lastPush/userLastPush, u2 (15s) kept, ghost (<60s) kept.
+	now = now.Add(15 * time.Second)
+	p.PruneExpired()
+	p.mu.Lock()
+	_, hasU1 := p.lastPush[tenantSubKey{tenantID: "t1", sub: "sub-1"}]
+	_, hasU2 := p.lastPush[tenantSubKey{tenantID: "t1", sub: "sub-2"}]
+	_, hasUserU1 := p.userLastPush["u1"]
+	_, hasUserU2 := p.userLastPush["u2"]
+	_, hasGhost := p.noBinding["ghost"]
+	p.mu.Unlock()
+	if hasU1 || hasUserU1 {
+		t.Fatal("expired u1 entry was not pruned from lastPush/userLastPush")
+	}
+	if !hasU2 || !hasUserU2 {
+		t.Fatal("fresh u2 entry must not be pruned prematurely")
+	}
+	if !hasGhost {
+		t.Fatal("fresh noBinding entry must remain before NoBindingTTL")
+	}
+
+	// Advance past 60s NoBindingTTL: ghost must be pruned.
+	now = now.Add(30 * time.Second)
+	p.PruneExpired()
+	p.mu.Lock()
+	_, hasGhostAfter := p.noBinding["ghost"]
+	p.mu.Unlock()
+	if hasGhostAfter {
+		t.Fatal("expired noBinding entry was not pruned")
+	}
+
+	// Counter error must NOT stamp lastPush/userLastPush so recovery pushes immediately.
+	cnt.Set(0, errors.New("temp db error"))
+	p.pushUserNow(context.Background(), "u1", true)
+	p.mu.Lock()
+	_, stampedOnErr := p.lastPush[tenantSubKey{tenantID: "t1", sub: "sub-1"}]
+	p.mu.Unlock()
+	if stampedOnErr {
+		t.Fatal("counter error must not stamp lastPush")
+	}
+}
+
+// Break (I5e): inverting NOT EXISTS or expiry > comparisons in LiveSessionBindings* SQL.
+func TestUnreadLiveBindingsSQLRealPostgres(t *testing.T) {
+	if os.Getenv("PHOENIX_TEST_DSN") == "" {
+		t.Skip("PHOENIX_TEST_DSN not set")
+	}
+	f := newFixture(t)
+	nowMS := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC).UnixMilli()
+	future := nowMS + 60_000
+	past := nowMS - 60_000
+
+	u1 := f.id("u1")
+	opEn := f.id("oe")
+	opDis := f.id("od")
+	for _, uid := range []string{u1, opEn, opDis} {
+		f.insert("users", map[string]any{"id": uid, "username": f.name("usr"), "email": f.name("e") + "@test.invalid"})
+	}
+	f.insert("phoenix_operator_accounts", map[string]any{"native_user_id": opEn, "enabled": true, "audit_ref": "op-1", "created_at": int64(1)})
+	f.insert("phoenix_operator_accounts", map[string]any{"native_user_id": opDis, "enabled": false, "audit_ref": "op-2", "created_at": int64(1)})
+
+	teamID := f.id("tm")
+	tenantID := f.id("tn")
+	f.insert("teams", map[string]any{"id": teamID, "name": f.name("team"), "type": "I"})
+	f.insert("phoenix_tenant_bindings", map[string]any{"tenant_id": tenantID, "team_id": teamID, "state": "ACTIVE"})
+	for _, uid := range []string{u1, opEn, opDis} {
+		f.insert("phoenix_user_bindings", map[string]any{
+			"issuer": "iss", "sub": "sub-" + uid, "tenant_id": tenantID,
+			"native_user_id": uid, "actor_kind": "CUSTOMER", "access_state": "GRANTED", "access_version": int64(1),
+		})
+	}
+
+	sLive := f.id("sl")
+	sLiveNull := f.id("sn")
+	sExp := f.id("se")
+	sExpIdle := f.id("si")
+	sExpAbs := f.id("sa")
+	sOpEn := f.id("so")
+	sOpDis := f.id("sd")
+	for _, row := range []struct {
+		id, uid, sid string
+		exp          int64
+		idle, abs    any
+	}{
+		{sLive, u1, "sid1", future, future, future},
+		{sLiveNull, u1, "sid2", 0, int64(0), int64(0)},
+		{sExp, u1, "sid3", past, future, future},
+		{sExpIdle, u1, "sid4", future, past, future},
+		{sExpAbs, u1, "sid5", future, future, past},
+		{sOpEn, opEn, "sido", future, future, future},
+		{sOpDis, opDis, "sidd", future, future, future},
+	} {
+		f.insert("sessions", map[string]any{"id": row.id, "token": f.name("tok"), "userid": row.uid})
+		_, err := f.db.Exec(`INSERT INTO phoenix_session_bindings
+			(session_id, issuer, sub, sid, tenant_id, native_user_id, access_version, expires_at, idle_expires_at, absolute_expires_at)
+			VALUES ($1,'iss',$2,$3,$4,$5,1,$6,$7,$8)`,
+			row.id, "sub-"+row.uid, row.sid, tenantID, row.uid, row.exp, row.idle, row.abs)
+		if err != nil {
+			t.Fatalf("insert binding %s: %v", row.id, err)
+		}
+	}
+
+	st := NewStore(f.db, func() time.Time { return time.UnixMilli(nowMS) })
+
+	all, err := st.LiveSessionBindings(context.Background())
+	if err != nil {
+		t.Fatalf("LiveSessionBindings: %v", err)
+	}
+	gotAll := map[string]bool{}
+	for _, b := range all {
+		gotAll[b.SessionID] = true
+	}
+	wantAll := map[string]bool{sLive: true, sLiveNull: true, sOpDis: true}
+	if len(gotAll) != len(wantAll) {
+		t.Fatalf("LiveSessionBindings mismatch: got %v want %v", gotAll, wantAll)
+	}
+	for k := range wantAll {
+		if !gotAll[k] {
+			t.Fatalf("LiveSessionBindings missing %s: got %v", k, gotAll)
+		}
+	}
+
+	gotU1, err := st.LiveSessionBindingsOfUser(context.Background(), u1)
+	if err != nil {
+		t.Fatalf("LiveSessionBindingsOfUser(u1): %v", err)
+	}
+	if len(gotU1) != 2 {
+		t.Fatalf("LiveSessionBindingsOfUser(u1) expected 2 live sessions, got %+v", gotU1)
+	}
+
+	op, err := st.LiveSessionBindingsOfUser(context.Background(), opEn)
+	if err != nil {
+		t.Fatalf("LiveSessionBindingsOfUser(op_enabled): %v", err)
+	}
+	if len(op) != 0 {
+		t.Fatalf("enabled operator must be excluded, got %+v", op)
+	}
 }

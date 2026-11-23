@@ -261,6 +261,9 @@ func (s *ShellService) ShellContext(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if s.UnreadPusher != nil {
+		s.UnreadPusher.UnstopSID(actor.SID)
+	}
 	s.proxy(w, r, "/internal/ui/shell-context", AudienceShellContext, actor, nil, nil, actor.SessionID+":"+actor.TenantID+":context")
 }
 
@@ -333,13 +336,11 @@ func (s *ShellService) UIPreferences(w http.ResponseWriter, r *http.Request) {
 
 // UnreadCount handles GET /phoenix/unread-count using the exact same authoritative counter
 // as UnreadPusher so the bell badge and the Gateway-pushed count always agree.
+// Per R5 revised, periodic polls of GET /phoenix/unread-count must NOT un-stop a stopped sid.
 func (s *ShellService) UnreadCount(w http.ResponseWriter, r *http.Request) {
 	actor, _, ok := s.actor(w, r)
 	if !ok {
 		return
-	}
-	if s.UnreadPusher != nil {
-		s.UnreadPusher.UnstopSID(actor.SID)
 	}
 	if s.UnreadCounter == nil {
 		s.writeShellResponse(w, http.StatusOK, "application/json; charset=utf-8", "", []byte(`{"count":0,"status":"unavailable"}`))

@@ -1067,6 +1067,16 @@ async function runH02(browser, c) {
                 }
 
                 // Keyboard on Launcher: focus launcher; Enter opens menu; arrows move; Escape returns.
+                if (vpKey === 'desktop') {
+                    const bellBox = await page.locator(TRIGGER.bell).boundingBox();
+                    const badge = page.locator('[data-testid="phoenix-unread-badge"]');
+                    const badgeText = await badge.textContent();
+                    const badgeLabel = await badge.getAttribute('aria-label');
+                    t.ok('desktop bell meets 44x44 target and shows unread badge',
+                        Boolean(bellBox && bellBox.width >= 44 - TOLERANCE && bellBox.height >= 44 - TOLERANCE && badgeText === '3' && badgeLabel === '3 chưa đọc'),
+                        {bellBox, badgeText, badgeLabel},
+                    );
+                }
                 await page.focus(TRIGGER.apps);
                 await page.keyboard.press('Tab');
                 await page.keyboard.press('Shift+Tab');

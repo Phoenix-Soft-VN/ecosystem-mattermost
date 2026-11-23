@@ -13,16 +13,18 @@ import (
 )
 
 const (
-	unreadBridgePath       = "/internal/ui/unread-count"
-	unreadMaxCount         = 9999
-	unreadDefaultDeepLink  = "/"
-	unreadDefaultThrottle  = 30 * time.Second
-	unreadDefaultStopTTL   = 15 * time.Minute
-	unreadDefaultWorkers   = 4
-	unreadMaxWorkers       = 4
-	unreadDefaultDeadline  = 4 * time.Minute
-	unreadDefaultInterval  = 5 * time.Minute
-	unreadDefaultTimeout   = 8 * time.Second
+	unreadBridgePath         = "/internal/ui/unread-count"
+	unreadMaxCount           = 9999
+	unreadDefaultDeepLink    = "/"
+	unreadDefaultThrottle    = 30 * time.Second
+	unreadDefaultStopTTL     = 15 * time.Minute
+	unreadDefaultNoBindTTL   = 60 * time.Second
+	unreadDefaultWorkers     = 4
+	unreadMaxWorkers         = 4
+	unreadDefaultNotifyQueue = 256
+	unreadDefaultDeadline    = 4 * time.Minute
+	unreadDefaultInterval    = 5 * time.Minute
+	unreadDefaultTimeout     = 8 * time.Second
 )
 
 // UnreadCounter computes the authoritative unread badge count for a native user
@@ -38,20 +40,32 @@ type UnreadBindingStore interface {
 	SessionBindingByID(ctx context.Context, sessionID string) (SessionBinding, error)
 }
 
+// UnreadNotifier is the seam used by app hooks to trigger asynchronous unread count pushes.
+type UnreadNotifier interface {
+	NotifyUser(userID string)
+	NotifyUserActivity(userID, sessionID string)
+}
+
 type tenantSubKey struct {
 	tenantID string
 	sub      string
 }
 
 type userPushState struct {
+	queued   bool
 	inFlight bool
 	dirty    bool
 	timer    *time.Timer
 }
 
 // UnreadPusher pushes authoritative unread counts to Gateway POST /internal/ui/unread-count.
-// All event-triggered pushes are asynchronous, coalesced per user, and throttled to at most
-// one push per 30 s per (tenant, sub) with a trailing recomputed latest value.
+// Event-triggered pushes are gated in memory before hitting the DB (per-user throttle +
+// negative cache for users without live bindings) and dispatched through a bounded worker
+// pool (<= 4 workers) so @channel fan-out never spawns unbounded goroutines or DB queries.
+//
+// Multi-replica (R7): per-process throttles, negative caches, and 5-minute refresh jobs are
+// accepted; N replicas may send up to N refresh pushes per interval, and Gateway overwrites
+// per (tenant, user, app), so extra pushes are safe.
 type UnreadPusher struct {
 	Store           UnreadBindingStore
 	Counter         UnreadCounter
@@ -61,6 +75,9 @@ type UnreadPusher struct {
 	Now             func() time.Time
 	Throttle        time.Duration
 	StopTTL         time.Duration
+	NoBindingTTL    time.Duration
+	NotifyWorkers   int
+	NotifyQueueSize int
 	RefreshWorkers  int
 	RefreshDeadline time.Duration
 	RequestTimeout  time.Duration
@@ -68,22 +85,51 @@ type UnreadPusher struct {
 
 	mu              sync.Mutex
 	users           map[string]*userPushState
+	userLastPush    map[string]time.Time
 	lastPush        map[tenantSubKey]time.Time
+	noBinding       map[string]time.Time
 	stopped         map[string]time.Time
+	notifyCh        chan string
+	stopCh          chan struct{}
+	poolStarted     bool
 	closed          bool
+	refreshStart    sync.Once
+	cancelRefresh   context.CancelFunc
 	refreshInFlight atomic.Bool
 }
 
 var (
-	defaultUnreadMu     sync.RWMutex
-	defaultUnreadPusher *UnreadPusher
+	defaultUnreadMu       sync.RWMutex
+	defaultUnreadNotifier UnreadNotifier
+	defaultUnreadPusher   *UnreadPusher
 )
 
-// SetDefaultUnreadPusher installs the process-wide unread pusher.
+// SetDefaultUnreadNotifier installs a custom UnreadNotifier (used in tests/wiring).
+func SetDefaultUnreadNotifier(n UnreadNotifier) {
+	defaultUnreadMu.Lock()
+	defaultUnreadNotifier = n
+	if p, ok := n.(*UnreadPusher); ok {
+		defaultUnreadPusher = p
+	} else {
+		defaultUnreadPusher = nil
+	}
+	defaultUnreadMu.Unlock()
+}
+
+// SetDefaultUnreadPusher installs the process-wide unread pusher, closing any previous one.
 func SetDefaultUnreadPusher(p *UnreadPusher) {
 	defaultUnreadMu.Lock()
+	prev := defaultUnreadPusher
 	defaultUnreadPusher = p
+	if p != nil {
+		defaultUnreadNotifier = p
+	} else {
+		defaultUnreadNotifier = nil
+	}
 	defaultUnreadMu.Unlock()
+	if prev != nil && prev != p {
+		prev.Close()
+	}
 }
 
 // DefaultUnreadPusher returns the installed unread pusher, or nil if not configured.
@@ -93,21 +139,36 @@ func DefaultUnreadPusher() *UnreadPusher {
 	return defaultUnreadPusher
 }
 
-// NotifyUnread triggers an asynchronous unread count push for userID when a pusher is installed.
+// CloseDefaultUnreadPusher stops the installed unread pusher on server shutdown.
+func CloseDefaultUnreadPusher() {
+	defaultUnreadMu.Lock()
+	prev := defaultUnreadPusher
+	defaultUnreadPusher = nil
+	defaultUnreadNotifier = nil
+	defaultUnreadMu.Unlock()
+	if prev != nil {
+		prev.Close()
+	}
+}
+
+// NotifyUnread triggers an asynchronous unread count push for userID when a notifier is installed.
 func NotifyUnread(userID string) {
-	if p := DefaultUnreadPusher(); p != nil {
-		p.NotifyUser(userID)
+	defaultUnreadMu.RLock()
+	n := defaultUnreadNotifier
+	defaultUnreadMu.RUnlock()
+	if n != nil {
+		n.NotifyUser(userID)
 	}
 }
 
 // NotifyUnreadActivity marks user-initiated session activity (un-stopping that session's sid
-// if previously stopped) and schedules an asynchronous unread count push.
+// only if any sid is currently stopped) and schedules an asynchronous unread count push.
 func NotifyUnreadActivity(userID, sessionID string) {
-	if p := DefaultUnreadPusher(); p != nil {
-		if sessionID != "" {
-			go p.UnstopSession(context.Background(), sessionID)
-		}
-		p.NotifyUser(userID)
+	defaultUnreadMu.RLock()
+	n := defaultUnreadNotifier
+	defaultUnreadMu.RUnlock()
+	if n != nil {
+		n.NotifyUserActivity(userID, sessionID)
 	}
 }
 
@@ -121,12 +182,17 @@ func NewUnreadPusher(store UnreadBindingStore, counter UnreadCounter, signer *Br
 		HTTP:            httpClient,
 		Throttle:        unreadDefaultThrottle,
 		StopTTL:         unreadDefaultStopTTL,
+		NoBindingTTL:    unreadDefaultNoBindTTL,
+		NotifyWorkers:   unreadDefaultWorkers,
+		NotifyQueueSize: unreadDefaultNotifyQueue,
 		RefreshWorkers:  unreadDefaultWorkers,
 		RefreshDeadline: unreadDefaultDeadline,
 		RequestTimeout:  unreadDefaultTimeout,
 		DeepLink:        unreadDefaultDeepLink,
 		users:           map[string]*userPushState{},
+		userLastPush:    map[string]time.Time{},
 		lastPush:        map[tenantSubKey]time.Time{},
+		noBinding:       map[string]time.Time{},
 		stopped:         map[string]time.Time{},
 	}
 }
@@ -150,6 +216,32 @@ func (p *UnreadPusher) stopTTL() time.Duration {
 		return p.StopTTL
 	}
 	return unreadDefaultStopTTL
+}
+
+func (p *UnreadPusher) noBindingTTL() time.Duration {
+	if p.NoBindingTTL > 0 {
+		return p.NoBindingTTL
+	}
+	return unreadDefaultNoBindTTL
+}
+
+func (p *UnreadPusher) notifyWorkers() int {
+	w := p.NotifyWorkers
+	if w <= 0 {
+		w = unreadDefaultWorkers
+	}
+	if w > unreadMaxWorkers {
+		w = unreadMaxWorkers
+	}
+	return w
+}
+
+func (p *UnreadPusher) notifyQueueSize() int {
+	q := p.NotifyQueueSize
+	if q <= 0 {
+		q = unreadDefaultNotifyQueue
+	}
+	return q
 }
 
 func (p *UnreadPusher) refreshWorkers() int {
@@ -202,8 +294,14 @@ func (p *UnreadPusher) ensureMapsLocked() {
 	if p.users == nil {
 		p.users = map[string]*userPushState{}
 	}
+	if p.userLastPush == nil {
+		p.userLastPush = map[string]time.Time{}
+	}
 	if p.lastPush == nil {
 		p.lastPush = map[tenantSubKey]time.Time{}
+	}
+	if p.noBinding == nil {
+		p.noBinding = map[string]time.Time{}
 	}
 	if p.stopped == nil {
 		p.stopped = map[string]time.Time{}
@@ -218,6 +316,38 @@ func (p *UnreadPusher) sweepStoppedLocked(now time.Time) {
 	}
 }
 
+// sweepMapsLocked prunes all TTL-bounded maps (stopped, noBinding, lastPush, userLastPush).
+func (p *UnreadPusher) sweepMapsLocked(now time.Time) {
+	p.sweepStoppedLocked(now)
+	for uid, exp := range p.noBinding {
+		if !now.Before(exp) {
+			delete(p.noBinding, uid)
+		}
+	}
+	throttle := p.throttle()
+	for k, ts := range p.lastPush {
+		if now.Sub(ts) >= throttle {
+			delete(p.lastPush, k)
+		}
+	}
+	for uid, ts := range p.userLastPush {
+		if now.Sub(ts) >= throttle {
+			delete(p.userLastPush, uid)
+		}
+	}
+}
+
+// PruneExpired runs a TTL sweep across all in-memory maps.
+func (p *UnreadPusher) PruneExpired() {
+	if p == nil {
+		return
+	}
+	now := p.now()
+	p.mu.Lock()
+	p.sweepMapsLocked(now)
+	p.mu.Unlock()
+}
+
 func (p *UnreadPusher) isStopped(sid string) bool {
 	if sid == "" {
 		return true
@@ -228,6 +358,14 @@ func (p *UnreadPusher) isStopped(sid string) bool {
 	p.sweepStoppedLocked(now)
 	_, ok := p.stopped[sid]
 	return ok
+}
+
+func (p *UnreadPusher) hasStopped() bool {
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sweepStoppedLocked(now)
+	return len(p.stopped) > 0
 }
 
 func (p *UnreadPusher) stopSID(sid string) {
@@ -265,26 +403,62 @@ func (p *UnreadPusher) UnstopSession(ctx context.Context, sessionID string) {
 	}
 }
 
-// Close cancels pending trailing timers.
-func (p *UnreadPusher) Close() {
-	if p == nil {
+// NotifyUserActivity clears the negative cache for userID, un-stops the session's sid only
+// when the stopped set is non-empty (avoiding a DB lookup on every channel view), and queues a push.
+func (p *UnreadPusher) NotifyUserActivity(userID, sessionID string) {
+	if p == nil || userID == "" {
 		return
 	}
 	p.mu.Lock()
-	p.closed = true
-	for _, st := range p.users {
-		if st.timer != nil {
-			st.timer.Stop()
-			st.timer = nil
-		}
-	}
+	delete(p.noBinding, userID)
 	p.mu.Unlock()
+	if sessionID != "" && p.hasStopped() {
+		go p.UnstopSession(context.Background(), sessionID)
+	}
+	p.NotifyUser(userID)
 }
 
-// NotifyUser schedules an asynchronous unread push for userID. Multiple calls for the same user
-// coalesce and obey the per-(tenant, sub) 30 s throttle with a trailing recomputed push.
-func (p *UnreadPusher) NotifyUser(userID string) {
-	if p == nil || userID == "" || p.Store == nil || p.Counter == nil || p.Signer == nil || p.GatewayURL == "" || p.HTTP == nil {
+func (p *UnreadPusher) ensureNotifyPoolLocked() {
+	if p.poolStarted || p.closed {
+		return
+	}
+	p.poolStarted = true
+	p.notifyCh = make(chan string, p.notifyQueueSize())
+	p.stopCh = make(chan struct{})
+	workers := p.notifyWorkers()
+	for i := 0; i < workers; i++ {
+		go p.notifyWorker(p.notifyCh, p.stopCh)
+	}
+}
+
+func (p *UnreadPusher) notifyWorker(ch <-chan string, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case userID := <-ch:
+			p.mu.Lock()
+			if p.closed {
+				p.mu.Unlock()
+				return
+			}
+			st := p.users[userID]
+			if st == nil {
+				p.mu.Unlock()
+				continue
+			}
+			st.queued = false
+			st.inFlight = true
+			p.mu.Unlock()
+
+			p.runUserPush(userID)
+		}
+	}
+}
+
+// Close cancels pending trailing timers, the periodic refresh loop, and the notify worker pool.
+func (p *UnreadPusher) Close() {
+	if p == nil {
 		return
 	}
 	p.mu.Lock()
@@ -292,22 +466,107 @@ func (p *UnreadPusher) NotifyUser(userID string) {
 		p.mu.Unlock()
 		return
 	}
+	p.closed = true
+	for _, st := range p.users {
+		if st.timer != nil {
+			st.timer.Stop()
+			st.timer = nil
+		}
+	}
+	cancel := p.cancelRefresh
+	p.cancelRefresh = nil
+	stopCh := p.stopCh
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if stopCh != nil {
+		close(stopCh)
+	}
+}
+
+func (p *UnreadPusher) scheduleTrailingLocked(userID string, st *userPushState, delay time.Duration) {
+	if st.timer != nil || p.closed {
+		return
+	}
+	if delay <= 0 {
+		delay = p.throttle()
+	}
+	st.timer = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		cur := p.users[userID]
+		if cur == nil || p.closed {
+			p.mu.Unlock()
+			return
+		}
+		cur.timer = nil
+		if cur.inFlight || cur.queued {
+			cur.dirty = true
+			p.mu.Unlock()
+			return
+		}
+		p.enqueueLocked(userID, cur)
+		p.mu.Unlock()
+	})
+}
+
+func (p *UnreadPusher) enqueueLocked(userID string, st *userPushState) {
+	p.ensureNotifyPoolLocked()
+	select {
+	case p.notifyCh <- userID:
+		st.queued = true
+	default:
+		// Queue saturated under heavy fan-out: coalesce onto a trailing timer instead of spawning goroutines.
+		st.dirty = true
+		p.scheduleTrailingLocked(userID, st, p.throttle())
+	}
+}
+
+// NotifyUser schedules an asynchronous unread push for userID. Gated in memory before touching
+// the DB (negative cache + per-user throttle) and dispatched through a bounded worker pool (<= 4).
+func (p *UnreadPusher) NotifyUser(userID string) {
+	if p == nil || userID == "" || p.Store == nil || p.Counter == nil || p.Signer == nil || p.GatewayURL == "" || p.HTTP == nil {
+		return
+	}
+	now := p.now()
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	p.ensureMapsLocked()
+	p.sweepMapsLocked(now)
+
+	// Negative cache: skip DB query for users recently known to have no live binding.
+	if exp, neg := p.noBinding[userID]; neg && now.Before(exp) {
+		p.mu.Unlock()
+		return
+	}
+
 	st, ok := p.users[userID]
 	if !ok {
 		st = &userPushState{}
 		p.users[userID] = st
 	}
-	if st.inFlight || st.timer != nil {
+	if st.queued || st.inFlight || st.timer != nil {
 		st.dirty = true
 		p.mu.Unlock()
 		return
 	}
-	st.inFlight = true
-	st.dirty = false
-	p.mu.Unlock()
 
-	go p.runUserPush(userID)
+	// Pre-DB per-user throttle gate: stay off the DB during the 30 s window and coalesce onto 1 trailing timer.
+	if last, hasLast := p.userLastPush[userID]; hasLast {
+		if rem := p.throttle() - now.Sub(last); rem > 0 {
+			st.dirty = false
+			p.scheduleTrailingLocked(userID, st, rem)
+			p.mu.Unlock()
+			return
+		}
+	}
+
+	st.dirty = false
+	p.enqueueLocked(userID, st)
+	p.mu.Unlock()
 }
 
 func (p *UnreadPusher) runUserPush(userID string) {
@@ -331,23 +590,7 @@ func (p *UnreadPusher) runUserPush(userID string) {
 		delay = p.throttle()
 	}
 	st.dirty = false
-	st.timer = time.AfterFunc(delay, func() {
-		p.mu.Lock()
-		cur := p.users[userID]
-		if cur == nil || p.closed {
-			p.mu.Unlock()
-			return
-		}
-		cur.timer = nil
-		if cur.inFlight {
-			cur.dirty = true
-			p.mu.Unlock()
-			return
-		}
-		cur.inFlight = true
-		p.mu.Unlock()
-		p.runUserPush(userID)
-	})
+	p.scheduleTrailingLocked(userID, st, delay)
 	p.mu.Unlock()
 }
 
@@ -356,7 +599,14 @@ func (p *UnreadPusher) runUserPush(userID string) {
 // and the shortest remaining wait duration is returned so the caller schedules a single trailing push.
 func (p *UnreadPusher) pushUserNow(ctx context.Context, userID string, respectThrottle bool) time.Duration {
 	bindings, err := p.Store.LiveSessionBindingsOfUser(ctx, userID)
-	if err != nil || len(bindings) == 0 {
+	if err != nil {
+		return 0
+	}
+	if len(bindings) == 0 {
+		p.mu.Lock()
+		p.ensureMapsLocked()
+		p.noBinding[userID] = p.now().Add(p.noBindingTTL())
+		p.mu.Unlock()
 		return 0
 	}
 	return p.pushUserBindings(ctx, userID, bindings, respectThrottle)
@@ -390,6 +640,7 @@ func (p *UnreadPusher) pushUserBindings(ctx context.Context, userID string, bind
 	var minWait time.Duration
 	if respectThrottle {
 		p.mu.Lock()
+		p.sweepMapsLocked(now)
 		for _, k := range order {
 			if last, ok := p.lastPush[k]; ok {
 				if rem := throttle - now.Sub(last); rem > 0 {
@@ -417,6 +668,7 @@ func (p *UnreadPusher) pushUserBindings(ctx context.Context, userID string, bind
 		count = clampUnreadCount(n)
 	}
 
+	anyReadyPushed := false
 	for _, k := range due {
 		if ctx.Err() != nil {
 			return minWait
@@ -431,12 +683,20 @@ func (p *UnreadPusher) pushUserBindings(ctx context.Context, userID string, bind
 				break
 			}
 		}
-		if pushed {
+		// Do not stamp lastPush on counter error ("unavailable") so recovery is not delayed 30 s.
+		if pushed && status == "ready" {
+			anyReadyPushed = true
 			p.mu.Lock()
 			p.ensureMapsLocked()
 			p.lastPush[k] = p.now()
 			p.mu.Unlock()
 		}
+	}
+	if anyReadyPushed {
+		p.mu.Lock()
+		p.ensureMapsLocked()
+		p.userLastPush[userID] = p.now()
+		p.mu.Unlock()
 	}
 	return minWait
 }
@@ -490,7 +750,8 @@ func (p *UnreadPusher) pushOneBinding(ctx context.Context, b SessionBinding, cou
 	return resp.StatusCode == http.StatusOK
 }
 
-// StartRefresh launches the bounded periodic refresh loop (default 5 minutes).
+// StartRefresh launches the bounded periodic refresh loop once (default 5 minutes).
+// Cancelled cleanly by ctx or Close().
 func (p *UnreadPusher) StartRefresh(ctx context.Context, interval time.Duration) {
 	if p == nil {
 		return
@@ -498,23 +759,35 @@ func (p *UnreadPusher) StartRefresh(ctx context.Context, interval time.Duration)
 	if interval <= 0 {
 		interval = unreadDefaultInterval
 	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				p.RefreshOnce(ctx)
-			}
+	p.refreshStart.Do(func() {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return
 		}
-	}()
+		rctx, cancel := context.WithCancel(ctx)
+		p.cancelRefresh = cancel
+		p.mu.Unlock()
+
+		go func() {
+			defer cancel()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-rctx.Done():
+					return
+				case <-ticker.C:
+					p.RefreshOnce(rctx)
+				}
+			}
+		}()
+	})
 }
 
 // RefreshOnce pushes fresh unread counts for all SQL-filtered live, non-operator sessions.
-// Guarded against overlapping runs, bounded by a worker pool (<= 4) and an overall deadline (< 5m).
-// Returns false if another refresh is already in flight.
+// Honours the 30 s throttle, guarded against overlapping runs, bounded by a worker pool (<= 4)
+// and an overall deadline (< 5m). Returns false if another refresh is already in flight.
 func (p *UnreadPusher) RefreshOnce(ctx context.Context) bool {
 	if p == nil || p.Store == nil || p.Counter == nil || p.Signer == nil || p.GatewayURL == "" || p.HTTP == nil {
 		return false
@@ -526,6 +799,8 @@ func (p *UnreadPusher) RefreshOnce(ctx context.Context) bool {
 
 	runCtx, cancel := context.WithTimeout(ctx, p.refreshDeadline())
 	defer cancel()
+
+	p.PruneExpired()
 
 	bindings, err := p.Store.LiveSessionBindings(runCtx)
 	if err != nil || len(bindings) == 0 {
@@ -570,7 +845,7 @@ func (p *UnreadPusher) RefreshOnce(ctx context.Context) bool {
 				if runCtx.Err() != nil {
 					return
 				}
-				p.pushUserBindings(runCtx, work.userID, work.bindings, false)
+				p.pushUserBindings(runCtx, work.userID, work.bindings, true)
 			}
 		}()
 	}

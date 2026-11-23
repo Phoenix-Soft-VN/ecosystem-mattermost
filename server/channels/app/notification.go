@@ -365,10 +365,6 @@ func (a *App) SendNotifications(rctx request.CTX, post *model.Post, team *model.
 				mlog.String("channel_id", post.ChannelId),
 				mlog.Err(nErr),
 			)
-		} else {
-			for _, uid := range mentionedUsersList {
-				phoenix.NotifyUnread(uid)
-			}
 		}
 
 		rctx.Logger().LogM(mlog.MlvlNotificationTrace, "Finished processing mentions",
@@ -385,6 +381,14 @@ func (a *App) SendNotifications(rctx request.CTX, post *model.Post, team *model.
 					mlog.String("channel_id", post.ChannelId),
 					mlog.Err(err),
 				)
+			}
+		}
+
+		// Notify unread pusher after CRT thread-mention writes have drained so the
+		// badge count reflects both channel and CRT thread mentions.
+		if nErr == nil || len(mentionAutofollowChans) > 0 {
+			for _, uid := range mentionedUsersList {
+				phoenix.NotifyUnread(uid)
 			}
 		}
 
