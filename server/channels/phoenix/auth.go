@@ -44,15 +44,15 @@ type SessionOps interface {
 // state + nonce + browser binding, 300 s single-use transaction, RS256 only, live authority check
 // and a session that is bound before its cookie is released.
 type AuthService struct {
-	Store     *Store
-	Settings  Settings
-	Keys      KeySet
-	Secret    string
-	TxnKey    []byte
-	HTTP      *http.Client
-	Sessions  SessionOps
-	Authority *Authority
-	Policy    *Policy
+	Store        *Store
+	Settings     Settings
+	Keys         KeySet
+	Secret       string
+	TxnKey       []byte
+	HTTP         *http.Client
+	Sessions     SessionOps
+	Authority    *Authority
+	Policy       *Policy
 	Limiter      *Limiter
 	Now          func() time.Time
 	Audit        func(event string, fields map[string]string)
@@ -379,8 +379,8 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 			SessionID: sessionID, Issuer: ub.Issuer, Sub: ub.Sub, SID: claims.SID, TenantID: ub.TenantID,
 			NativeUserID: ub.NativeUserID, AccessVersion: ub.AccessVersion, ExpiresAtMS: expiresAtMS,
 			AccessTokenEnc: accessEnc, RefreshTokenEnc: refreshEnc,
-			AccessExpiresAtMS: nowMS + expSec*1000,
-			IdleExpiresAtMS:   nowMS + 7*24*3600*1000,
+			AccessExpiresAtMS:   nowMS + expSec*1000,
+			IdleExpiresAtMS:     nowMS + 7*24*3600*1000,
 			AbsoluteExpiresAtMS: nowMS + 90*24*3600*1000,
 		})
 	}
@@ -395,7 +395,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.UnreadPusher != nil {
 		s.UnreadPusher.UnstopSID(claims.SID)
-		s.UnreadPusher.NotifyUser(ub.NativeUserID)
+		s.UnreadPusher.NotifyUserActivity(ub.NativeUserID, sessionID)
 	}
 	dest := "/" + teamName
 	if strings.HasPrefix(txn.ReturnPath, "/"+teamName+"/") {

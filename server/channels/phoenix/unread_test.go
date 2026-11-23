@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type fakeUnreadStore struct {
@@ -1020,5 +1023,204 @@ func TestUnreadLiveBindingsSQLRealPostgres(t *testing.T) {
 	}
 	if len(op) != 0 {
 		t.Fatalf("enabled operator must be excluded, got %+v", op)
+	}
+}
+
+type loginFakeConn struct {
+	nonceHash  string
+	sealedPKCE string
+	issuer     string
+	sub        string
+	tenantID   string
+	nativeUID  string
+	teamID     string
+	teamName   string
+	nowMS      int64
+}
+
+func (c *loginFakeConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("unused") }
+func (c *loginFakeConn) Close() error                        { return nil }
+func (c *loginFakeConn) Begin() (driver.Tx, error)           { return memTx{}, nil }
+func (c *loginFakeConn) ExecContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Result, error) {
+	return driver.RowsAffected(1), nil
+}
+func (c *loginFakeConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
+	switch {
+	case strings.Contains(q, "phoenix_auth_transactions"):
+		return &singleDriverRow{
+			cols: []string{"nonce_hash", "pkce_verifier", "return_path", "expires_at"},
+			vals: []driver.Value{c.nonceHash, c.sealedPKCE, "/", c.nowMS + 300_000},
+		}, nil
+	case strings.Contains(q, "phoenix_user_bindings"):
+		return &singleDriverRow{
+			cols: []string{"issuer", "sub", "tenant_id", "native_user_id", "actor_kind", "access_state", "access_version"},
+			vals: []driver.Value{c.issuer, c.sub, c.tenantID, c.nativeUID, string(ActorCustomer), string(AccessGranted), int64(1)},
+		}, nil
+	case strings.Contains(q, "JOIN teams"):
+		return &singleDriverRow{
+			cols: []string{"name"},
+			vals: []driver.Value{c.teamName},
+		}, nil
+	case strings.Contains(q, "phoenix_tenant_bindings"):
+		return &singleDriverRow{
+			cols: []string{"tenant_id", "team_id", "default_channel_id", "state", "policy_version", "desired_version"},
+			vals: []driver.Value{c.tenantID, c.teamID, "", string(TenantActive), int64(1), int64(1)},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unexpected query: %s", q)
+	}
+}
+
+type singleDriverRow struct {
+	cols []string
+	vals []driver.Value
+	done bool
+}
+
+func (r *singleDriverRow) Columns() []string { return r.cols }
+func (r *singleDriverRow) Close() error      { return nil }
+func (r *singleDriverRow) Next(dest []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	copy(dest, r.vals)
+	return nil
+}
+
+type loginFakeSessions struct {
+	sessionID string
+	onBind    func(sessionID string)
+}
+
+func (s *loginFakeSessions) NewSession(_ context.Context, _ http.ResponseWriter, _ *http.Request, _ string, bind func(sessionID string, expiresAtMS int64) error) (string, error) {
+	if err := bind(s.sessionID, time.Now().Add(time.Hour).UnixMilli()); err != nil {
+		return "", err
+	}
+	if s.onBind != nil {
+		s.onBind(s.sessionID)
+	}
+	return s.sessionID, nil
+}
+func (s *loginFakeSessions) RevokeSession(context.Context, string) error { return nil }
+func (s *loginFakeSessions) SessionIDFromRequest(context.Context, *http.Request) (string, bool) {
+	return "", false
+}
+
+// Break (P2 minor): calling NotifyUser instead of NotifyUserActivity in AuthService.Callback
+// lets a prior noBinding negative-cache entry swallow the user's first unread push after login.
+func TestUnreadLoginClearsNegativeCache(t *testing.T) {
+	now := time.Now().UTC()
+	key := newTestKey(t, "login-kid")
+	idClaims := jwt.MapClaims{
+		"iss":       testIssuer,
+		"aud":       "mattermost",
+		"sub":       "sub-u1",
+		"sid":       "sid-login",
+		"tenant_id": "tenant-1",
+		"nonce":     "login-nonce",
+		"iat":       now.Unix(),
+		"exp":       now.Add(time.Minute).Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, idClaims)
+	tok.Header["kid"] = "login-kid"
+	rawIDToken, err := tok.SignedString(key.key)
+	if err != nil {
+		t.Fatalf("sign id token: %v", err)
+	}
+
+	pushed := make(chan int, 2)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id_token": rawIDToken, "expires_in": 300})
+		case unreadBridgePath:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			pushed <- int(body["count"].(float64))
+			w.WriteHeader(http.StatusOK)
+		default:
+			_ = json.NewEncoder(w).Encode(AuthorityDecision{
+				Active: true, ChatEntitled: true, MembershipState: "ACTIVE", TenantState: "ACTIVE",
+				ExpiresAt: now.Add(30 * time.Second),
+			})
+		}
+	}))
+	defer gw.Close()
+
+	// Start with NO live binding for u1 so NotifyUser populates the negative cache.
+	unreadStore := &fakeUnreadStore{}
+	cnt := &fakeUnreadCounter{count: 4}
+	pusher := NewUnreadPusher(unreadStore, cnt, &BridgeSigner{Issuer: "chat-issuer", Secret: []byte("s")}, gw.URL, gw.Client())
+	defer pusher.Close()
+
+	pusher.pushUserNow(context.Background(), "u1", true)
+	pusher.mu.Lock()
+	_, cachedNeg := pusher.noBinding["u1"]
+	pusher.mu.Unlock()
+	if !cachedNeg {
+		t.Fatal("expected noBinding negative cache to be populated before login")
+	}
+
+	// Build AuthService wired to the same UnreadPusher and a fake SQL store.
+	authSvc := &AuthService{
+		Settings: Settings{
+			OIDCIssuer:   testIssuer,
+			OIDCClientID: "mattermost",
+			OIDCTokenURL: gw.URL + "/oauth2/token",
+			SiteOrigin:   "https://chat.mm-replace.test",
+		},
+		Keys:         staticKeys{"login-kid": &key.key.PublicKey},
+		Secret:       "client-secret",
+		TxnKey:       []byte("01234567890123456789012345678901"),
+		HTTP:         gw.Client(),
+		Authority:    NewAuthority(&AuthorityClient{URL: gw.URL, HTTP: gw.Client(), Issuer: testIssuer, Signer: &BridgeSigner{Issuer: "native", Secret: []byte("s")}}),
+		Now:          func() time.Time { return now },
+		UnreadPusher: pusher,
+	}
+	sealedPKCE, err := authSvc.seal("pkce-verifier")
+	if err != nil {
+		t.Fatalf("seal pkce: %v", err)
+	}
+	conn := &loginFakeConn{
+		nonceHash:  hashHex("login-nonce"),
+		sealedPKCE: sealedPKCE,
+		issuer:     testIssuer,
+		sub:        "sub-u1",
+		tenantID:   "tenant-1",
+		nativeUID:  "u1",
+		teamID:     "team-id-1",
+		teamName:   "team-a",
+		nowMS:      now.UnixMilli(),
+	}
+	db := sql.OpenDB(&funcConnector{open: func() (driver.Conn, error) { return conn, nil }})
+	defer db.Close()
+	authSvc.Store = NewStore(db, func() time.Time { return now })
+	authSvc.Sessions = &loginFakeSessions{
+		sessionID: "sess-login",
+		onBind: func(sessionID string) {
+			unreadStore.mu.Lock()
+			unreadStore.bindings = append(unreadStore.bindings, SessionBinding{
+				SessionID: sessionID, Sub: "sub-u1", TenantID: "tenant-1", SID: "sid-login", NativeUserID: "u1",
+			})
+			unreadStore.mu.Unlock()
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://chat.mm-replace.test/phoenix/auth/callback?state=st1&code=code1", nil)
+	req.AddCookie(&http.Cookie{Name: authBindCookie, Value: "browser-1"})
+	rec := httptest.NewRecorder()
+	authSvc.Callback(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/team-a" {
+		t.Fatalf("expected login redirect to /team-a, got %d %s %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+
+	select {
+	case got := <-pushed:
+		if got != 4 {
+			t.Fatalf("expected first login unread push with count 4, got %d", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("login did not push unread count (negative cache swallowed it)")
 	}
 }

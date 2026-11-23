@@ -28,15 +28,15 @@ const (
 )
 
 type cachedShellEntry struct {
-	sessionID string
-	sub       string
-	tenantID  string
-	status    int
+	sessionID   string
+	sub         string
+	tenantID    string
+	status      int
 	contentType string
-	etag      string
-	body      []byte
-	freshAt   time.Time
-	lkgUntil  time.Time
+	etag        string
+	body        []byte
+	freshAt     time.Time
+	lkgUntil    time.Time
 }
 
 // ShellService is the native BFF of design §6.7. The browser never supplies tenant, sub or sid:
